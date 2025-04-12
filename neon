@@ -1,0 +1,195 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local neonEnabled = false -- Статус кнопки
+
+-- Функция для создания GUI
+local function createNeonButton()
+    local player = Players.LocalPlayer
+    local playerGui = player:WaitForChild("PlayerGui")
+
+    if playerGui:FindFirstChild("NeonScreenGui") then
+        return playerGui:FindFirstChild("NeonScreenGui").NeonButton
+    end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "NeonScreenGui"
+    screenGui.ResetOnSpawn = false -- чтобы не исчезала при смерти
+    screenGui.Parent = playerGui
+
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "StatusLabel"
+    statusLabel.Size = UDim2.new(0, 200, 0, 25)
+    statusLabel.Position = UDim2.new(0.5, -100, 0.9, -55)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.TextColor3 = Color3.new(1, 1, 1)
+    statusLabel.TextSize = 18
+    statusLabel.Font = Enum.Font.SourceSansBold
+    statusLabel.Text = "Статус: Выключено"
+    statusLabel.Parent = screenGui
+
+    local neonButton = Instance.new("TextButton")
+    neonButton.Name = "NeonButton"
+    neonButton.Size = UDim2.new(0, 200, 0, 50)
+    neonButton.Position = UDim2.new(0.5, -100, 0.9, -25)
+    neonButton.Text = "Неон"
+    neonButton.BackgroundColor3 = Color3.fromRGB(80, 200, 120)
+    neonButton.TextColor3 = Color3.new(1, 1, 1)
+    neonButton.Parent = screenGui
+
+    return neonButton, statusLabel
+end
+
+local neonButton, statusLabel = createNeonButton()
+
+-- Функция для удаления одежды, источников света и применения материала "Неон"
+local function applyEmeraldNeonEffect(character)
+    if not character then return end
+
+    for _, child in pairs(character:GetChildren()) do
+        if child:IsA("Clothing") or child:IsA("Accessory") then
+            child:Destroy()
+        end
+    end
+
+    for _, part in pairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            for _, descendant in pairs(part:GetChildren()) do
+                if descendant:IsA("Light") then
+                    descendant:Destroy()
+                end
+            end
+            part.Material = Enum.Material.Neon
+            part.Color = Color3.fromRGB(80, 200, 120)
+
+            if part.Name == "Head" then
+                for _, mesh in pairs(part:GetChildren()) do
+                    if mesh:IsA("SpecialMesh") or mesh:IsA("Mesh") then
+                        mesh:Destroy()
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function isCharacterNeon(character)
+    for _, part in pairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            if part.Material ~= Enum.Material.Neon or part.Color ~= Color3.fromRGB(80, 200, 120) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+-- Обновить текст статуса
+local function updateStatusText()
+    if statusLabel then
+        statusLabel.Text = neonEnabled and "Статус: Включено" or "Статус: Выключено"
+    end
+end
+
+-- Обработка кнопки
+local function onNeonButtonClicked()
+    neonEnabled = not neonEnabled
+    updateStatusText()
+
+    if neonEnabled then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player.Character then
+                applyEmeraldNeonEffect(player.Character)
+            end
+        end
+    end
+end
+
+neonButton.MouseButton1Click:Connect(onNeonButtonClicked)
+
+-- Кнопка видимость
+local isButtonVisible = true
+local function toggleButtonVisibility()
+    isButtonVisible = not isButtonVisible
+    neonButton.Visible = isButtonVisible
+    statusLabel.Visible = isButtonVisible
+end
+
+UserInputService.InputBegan:Connect(function(input, isProcessed)
+    if isProcessed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        toggleButtonVisibility()
+    end
+end)
+
+-- При добавлении игрока
+local function onPlayerAdded(player)
+    local function onCharacterAdded(character)
+        if neonEnabled then
+            applyEmeraldNeonEffect(character)
+        end
+    end
+
+    if player.Character then
+        onCharacterAdded(player.Character)
+    end
+
+    player.CharacterAdded:Connect(onCharacterAdded)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, player in pairs(Players:GetPlayers()) do
+    onPlayerAdded(player)
+end
+
+-- Проверка каждые 2 секунды
+task.spawn(function()
+    while true do
+        if neonEnabled then
+            for _, player in pairs(Players:GetPlayers()) do
+                local character = player.Character
+                if character and not isCharacterNeon(character) then
+                    applyEmeraldNeonEffect(character)
+                end
+            end
+        end
+        task.wait(2)
+    end
+end)
+
+-- Перетаскивание кнопки
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    neonButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    statusLabel.Position = neonButton.Position - UDim2.new(0, 0, 0, 30)
+end
+
+neonButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = neonButton.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+neonButton.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input == dragInput then
+        update(input)
+    end
+end)
+
+-- Инициализация статуса
+updateStatusText()
