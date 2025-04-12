@@ -63,6 +63,7 @@ local function applyEmeraldNeonEffect(character)
                 part = part,
                 material = part.Material,
                 color = part.Color,
+                brickColor = part.BrickColor,
                 meshes = {}
             })
 
@@ -99,6 +100,7 @@ local function restoreOriginalState(character)
         if part and part:IsDescendantOf(character) then
             part.Material = partData.material
             part.Color = partData.color
+            part.BrickColor = partData.brickColor
 
             for _, mesh in pairs(partData.meshes) do
                 mesh:Clone().Parent = part
