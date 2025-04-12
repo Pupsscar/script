@@ -1,20 +1,20 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 
-local neonEnabled = false -- Статус кнопки
+local neonEnabled = false
+local originalStates = {}
 
--- Функция для создания GUI
 local function createNeonButton()
     local player = Players.LocalPlayer
     local playerGui = player:WaitForChild("PlayerGui")
 
     if playerGui:FindFirstChild("NeonScreenGui") then
-        return playerGui:FindFirstChild("NeonScreenGui").NeonButton
+        return playerGui:FindFirstChild("NeonScreenGui").NeonButton, playerGui:FindFirstChild("NeonScreenGui").StatusLabel
     end
 
     local screenGui = Instance.new("ScreenGui")
     screenGui.Name = "NeonScreenGui"
-    screenGui.ResetOnSpawn = false -- чтобы не исчезала при смерти
+    screenGui.ResetOnSpawn = false
     screenGui.Parent = playerGui
 
     local statusLabel = Instance.new("TextLabel")
@@ -42,35 +42,71 @@ end
 
 local neonButton, statusLabel = createNeonButton()
 
--- Функция для удаления одежды, источников света и применения материала "Неон"
 local function applyEmeraldNeonEffect(character)
     if not character then return end
+    local original = {
+        parts = {},
+        accessories = {},
+        clothes = {}
+    }
 
     for _, child in pairs(character:GetChildren()) do
-        if child:IsA("Clothing") or child:IsA("Accessory") then
+        if child:IsA("Accessory") or child:IsA("Clothing") then
+            table.insert(original[child:IsA("Accessory") and "accessories" or "clothes"], child:Clone())
             child:Destroy()
         end
     end
 
     for _, part in pairs(character:GetChildren()) do
         if part:IsA("BasePart") then
+            table.insert(original.parts, {
+                part = part,
+                material = part.Material,
+                color = part.Color,
+                meshes = {}
+            })
+
             for _, descendant in pairs(part:GetChildren()) do
                 if descendant:IsA("Light") then
                     descendant:Destroy()
+                elseif descendant:IsA("SpecialMesh") or descendant:IsA("Mesh") then
+                    table.insert(original.parts[#original.parts].meshes, descendant:Clone())
+                    descendant:Destroy()
                 end
             end
+
             part.Material = Enum.Material.Neon
             part.Color = Color3.fromRGB(80, 200, 120)
+        end
+    end
 
-            if part.Name == "Head" then
-                for _, mesh in pairs(part:GetChildren()) do
-                    if mesh:IsA("SpecialMesh") or mesh:IsA("Mesh") then
-                        mesh:Destroy()
-                    end
-                end
+    originalStates[character] = original
+end
+
+local function restoreOriginalState(character)
+    local original = originalStates[character]
+    if not original then return end
+
+    for _, clothing in pairs(original.clothes) do
+        clothing:Clone().Parent = character
+    end
+    for _, accessory in pairs(original.accessories) do
+        accessory:Clone().Parent = character
+    end
+
+    for _, partData in pairs(original.parts) do
+        local part = partData.part
+        if part and part:IsDescendantOf(character) then
+            part.Material = partData.material
+            part.Color = partData.color
+
+            for _, mesh in pairs(partData.meshes) do
+                mesh:Clone().Parent = part
             end
         end
     end
+
+    originalStates[character] = nil
 end
 
 local function isCharacterNeon(character)
@@ -84,22 +120,23 @@ local function isCharacterNeon(character)
     return true
 end
 
--- Обновить текст статуса
 local function updateStatusText()
     if statusLabel then
         statusLabel.Text = neonEnabled and "Статус: Включено" or "Статус: Выключено"
     end
 end
 
--- Обработка кнопки
 local function onNeonButtonClicked()
     neonEnabled = not neonEnabled
     updateStatusText()
 
-    if neonEnabled then
-        for _, player in pairs(Players:GetPlayers()) do
-            if player.Character then
-                applyEmeraldNeonEffect(player.Character)
+    for _, player in pairs(Players:GetPlayers()) do
+        local character = player.Character
+        if character then
+            if neonEnabled then
+                applyEmeraldNeonEffect(character)
+            else
+                restoreOriginalState(character)
             end
         end
     end
@@ -107,7 +144,6 @@ end
 
 neonButton.MouseButton1Click:Connect(onNeonButtonClicked)
 
--- Кнопка видимость
 local isButtonVisible = true
 local function toggleButtonVisibility()
     isButtonVisible = not isButtonVisible
@@ -122,7 +158,6 @@ UserInputService.InputBegan:Connect(function(input, isProcessed)
     end
 end)
 
--- При добавлении игрока
 local function onPlayerAdded(player)
     local function onCharacterAdded(character)
         if neonEnabled then
@@ -142,7 +177,6 @@ for _, player in pairs(Players:GetPlayers()) do
     onPlayerAdded(player)
 end
 
--- Проверка каждые 2 секунды
 task.spawn(function()
     while true do
         if neonEnabled then
@@ -157,7 +191,6 @@ task.spawn(function()
     end
 end)
 
--- Перетаскивание кнопки
 local dragging, dragInput, dragStart, startPos
 local function update(input)
     local delta = input.Position - dragStart
@@ -191,5 +224,4 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
--- Инициализация статуса
 updateStatusText()
