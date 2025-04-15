@@ -25,14 +25,14 @@ local function createNeonButton()
     statusLabel.TextColor3 = Color3.new(1, 1, 1)
     statusLabel.TextSize = 18
     statusLabel.Font = Enum.Font.SourceSansBold
-    statusLabel.Text = "Статус: Выключено"
+    statusLabel.Text = "Status: OFF"
     statusLabel.Parent = screenGui
 
     local neonButton = Instance.new("TextButton")
     neonButton.Name = "NeonButton"
     neonButton.Size = UDim2.new(0, 200, 0, 50)
     neonButton.Position = UDim2.new(0.5, -100, 0.9, -25)
-    neonButton.Text = "Неон"
+    neonButton.Text = "Neon"
     neonButton.BackgroundColor3 = Color3.fromRGB(80, 200, 120)
     neonButton.TextColor3 = Color3.new(1, 1, 1)
     neonButton.Parent = screenGui
@@ -124,7 +124,7 @@ end
 
 local function updateStatusText()
     if statusLabel then
-        statusLabel.Text = neonEnabled and "Статус: Включено" or "Статус: Выключено"
+        statusLabel.Text = neonEnabled and "Status: ON" or "Status: OFF"
     end
 end
 
