@@ -186,6 +186,8 @@ local intervalBox=field("Интервал повторного TP, сек.","1")
 local killDelayBox=field("Сброс после цели, сек.","3")
 local beforeEBox=field("Ожидание перед E, сек.","1.5")
 local resetDelayBox=field("Ожидание после E, сек.","3")
+local boxPortalDelay=field("После возрождения: портал → бокс, сек.","1.5")
+local tapInfo=label(settingsPage,"Автонажатие: ожидание",58)
 label(settingsPage,"Значение 0 убирает ожидание перед E; это не ускоряет возрождение.",58)
 local optimizeButton=button(settingsPage,"Оптимизация · ВЫКЛ",Color3.fromRGB(53,75,126))
 local optimizeInfo=label(settingsPage,"Графика не изменена",64)
@@ -265,7 +267,7 @@ local function alive(character)
     return root,hum
 end
 local function valid(character,token)
-    return running and not boxActive and token==revision and alive(character)~=nil
+    return running and token==revision and alive(character)~=nil
 end
 local function waitActive(duration,character,token)
     local finish=os.clock()+duration
@@ -317,7 +319,18 @@ local function toTarget(character)
     local root=char and char:FindFirstChild("HumanoidRootPart")
     local hum=char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health<=0 then return false,"Ожидание цели" end
-    return moveRoot(character,root.CFrame*CFrame.new(0,0,-3.5)*CFrame.Angles(0,math.pi,0))
+    local destination=root.CFrame*CFrame.new(0,0,-3.5)*CFrame.Angles(0,math.pi,0)
+    if boxActive then
+        local offset=root.Position-BOX_CENTER
+        if math.abs(offset.X)>16 or math.abs(offset.Y)>10 or math.abs(offset.Z)>16 then
+            return false,"Цель вне бокса · ожидание её возвращения"
+        end
+        local position=destination.Position-BOX_CENTER
+        destination=CFrame.new(BOX_CENTER+Vector3.new(
+            math.clamp(position.X,-14,14),math.clamp(position.Y,-7,7),math.clamp(position.Z,-14,14)
+        ))*destination.Rotation
+    end
+    return moveRoot(character,destination)
 end
 local function releaseE()
     if heldE and type(releaseKey)=="function" then pcall(releaseKey,0x45) end
@@ -336,6 +349,9 @@ local function disableBox(restore)
         end
     end
     boxActive=false
+    revision=revision+1
+    flags.loop=false
+    paint()
     if boxModel then boxModel:Destroy() end
     boxModel,boxCharacter,boxReturn=nil,nil,nil
     paintBox()
@@ -381,9 +397,9 @@ local function enableBox()
     boxCharacter,boxReturn,boxActive=character,original,true
     revision=revision+1
     releaseE()
-    flags.hamam,flags.portal,flags.kill,flags.loop=false,false,false,false
+    flags.hamam,flags.portal,flags.kill=false,false,false
     paint(); paintBox()
-    setStatus("Бокс: 12000, 1500, 12000 · режимы перемещения остановлены")
+    setStatus("Бокс включён · повторный TP внутри бокса доступен")
     return true
 end
 connect(boxButton.Activated,function()
@@ -400,10 +416,11 @@ local function checkBox(dt)
     if boxCheckElapsed<0.1 then return end
     boxCheckElapsed=0
     local root=alive(boxCharacter)
-    if not root or not boxModel or not boxModel.Parent then
+    if not boxModel or not boxModel.Parent then
         disableBox(root~=nil)
         return
     end
+    if not root then return end
     local offset=root.Position-BOX_CENTER
     if math.abs(offset.X)>16 or math.abs(offset.Y)>10 or math.abs(offset.Z)>16 then
         local ok,moved=pcall(moveRoot,boxCharacter,CFrame.new(BOX_CENTER+Vector3.new(0,-5,0)))
@@ -618,7 +635,7 @@ local nextAttempt,nextTarget=0,0
 for name,b in pairs(buttons) do
     local key=name
     connect(b.Activated,function()
-        if boxActive and (key=="hamam" or key=="portal" or key=="loop" or key=="kill") then
+        if boxActive and (key=="hamam" or key=="portal" or key=="kill") then
             setStatus("Сначала выключи бокс, чтобы вернуться на карту",true)
             return
         end
@@ -642,14 +659,45 @@ connect(player.CharacterAdded,function()
     if flags.hamam or flags.portal or flags.loop or flags.kill then setStatus("Ожидание готовности персонажа") end
 end)
 connect(player.CharacterRemoving,function(character)
-    if boxCharacter==character then disableBox(false) end
+    if boxCharacter==character then
+        boxCharacter,boxReturn=nil,nil
+        setStatus("Бокс сохранён · ожидание возрождения")
+    end
     releaseE()
     if flags.hamam or flags.portal or flags.loop or flags.kill then setStatus("Ожидание возрождения · режим сохранён") end
 end)
 task.spawn(function()
     while running do
         local character=player.Character
-        if not boxActive and (flags.hamam or flags.portal or flags.loop or flags.kill) and alive(character) then
+        if boxActive and alive(character) then
+            if boxCharacter~=character and os.clock()>=nextAttempt then
+                local token=revision
+                local root=alive(character)
+                local returnPosition=root.CFrame
+                local executed,result,reason=pcall(function()
+                    local ok,err=toPortal(character,token)
+                    if not ok then return false,err end
+                    setStatus("Возрождение · портал → ожидание перехода → бокс")
+                    if not waitActive(numberValue(boxPortalDelay,1.5,0,30),character,token) or not boxActive then
+                        return false,"Cancelled"
+                    end
+                    if not moveRoot(character,CFrame.new(BOX_CENTER+Vector3.new(0,-5,0))) then return false,"Cancelled" end
+                    boxCharacter,boxReturn=character,returnPosition
+                    setStatus("Персонаж вернулся в бокс")
+                    return true
+                end)
+                if running and boxActive and token==revision and (not executed or not result) then
+                    nextAttempt=os.clock()+1
+                    local message=executed and reason or result
+                    if message~="Cancelled" then setStatus(tostring(message),true) end
+                end
+                nextTarget=os.clock()+numberValue(intervalBox,1,0.05,30)
+            elseif boxCharacter==character and flags.loop and os.clock()>=nextTarget then
+                local ok,moved,reason=pcall(toTarget,character)
+                if not ok or not moved then setStatus(tostring(ok and reason or moved),true) end
+                nextTarget=os.clock()+numberValue(intervalBox,1,0.05,30)
+            end
+        elseif not boxActive and (flags.hamam or flags.portal or flags.loop or flags.kill) and alive(character) then
             local token=revision
             local fresh=handledCharacter~=character or handledRevision~=token
             if fresh and os.clock()>=nextAttempt then
@@ -675,17 +723,41 @@ task.spawn(function()
         task.wait(0.05)
     end
 end)
+local activeTool
+local function releaseTool()
+    if activeTool then pcall(function() activeTool:Deactivate() end) end
+    activeTool=nil
+end
+local function autoTap()
+    local character=player.Character
+    if not running or not flags.tap or not alive(character) then return false,"Ожидание персонажа" end
+    local tool=character:FindFirstChildOfClass("Tool")
+    if tool then
+        if not tool.Enabled then return false,"Предмет на перезарядке" end
+        if tool.RequiresHandle and not tool:FindFirstChild("Handle") then return false,"У предмета отсутствует Handle" end
+        activeTool=tool
+        local ok,err=pcall(function() tool:Activate() end)
+        if not ok then releaseTool(); return false,tostring(err) end
+        task.wait(0.05)
+        releaseTool()
+        return true,"Активация предмета отправлена"
+    end
+    local ok,err=pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton1(Vector2.zero)
+    end)
+    return ok,ok and "Клик отправлен · предмет не выбран" or tostring(err)
+end
 task.spawn(function()
-    local nextTap=0
     while running do
-        if not boxActive and flags.tap and alive(player.Character) and os.clock()>=nextTap then
-            local ok,err=pcall(function()
-                VirtualUser:CaptureController(); VirtualUser:ClickButton1(Vector2.zero)
-            end)
-            nextTap=os.clock()+(ok and 0.5 or 5)
-            if not ok then setStatus("Автонажатие: "..tostring(err),true) end
+        if flags.tap then
+            local executed,ok,message=pcall(autoTap)
+            if running then
+                tapInfo.Text="Автонажатие: "..tostring(executed and message or ok)
+                tapInfo.TextColor3=executed and ok and colors.muted or colors.error
+            end
         end
-        task.wait(0.1)
+        task.wait(0.5)
     end
 end)
 local cleanup
@@ -693,6 +765,7 @@ cleanup=function()
     if not running then return end
     disableBox(true)
     running=false; revision=revision+1; generation=generation+1; optimized=false
+    releaseTool()
     releaseE()
     for _,connection in ipairs(connections) do connection:Disconnect() end
     table.clear(connections)
