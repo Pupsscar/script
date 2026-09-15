@@ -351,6 +351,7 @@ local function disableBox(restore)
     boxActive=false
     revision=revision+1
     flags.loop=false
+    flags.kill=false
     paint()
     if boxModel then boxModel:Destroy() end
     boxModel,boxCharacter,boxReturn=nil,nil,nil
@@ -397,7 +398,7 @@ local function enableBox()
     boxCharacter,boxReturn,boxActive=character,original,true
     revision=revision+1
     releaseE()
-    flags.hamam,flags.portal,flags.kill=false,false,false
+    flags.hamam,flags.portal=false,false
     paint(); paintBox()
     setStatus("Бокс включён · повторный TP внутри бокса доступен")
     return true
@@ -632,10 +633,42 @@ end)
 
 local handledCharacter,handledRevision=nil,-1
 local nextAttempt,nextTarget=0,0
+local boxResetCharacter,boxResetAt,boxResetRevision
+local function stepBoxTarget(character)
+    if boxResetCharacter~=character or boxResetRevision~=revision or not flags.kill then
+        boxResetCharacter,boxResetAt,boxResetRevision=nil,nil,nil
+    end
+    if not boxActive or boxCharacter~=character or not alive(character) then return end
+    if boxResetAt and os.clock()>=boxResetAt then
+        local token=revision
+        boxResetCharacter,boxResetAt,boxResetRevision=nil,nil,nil
+        local executed,result,reason=pcall(resetCharacter,character,token)
+        if not executed or not result then
+            setStatus(tostring(executed and reason or result),true)
+            nextTarget=os.clock()+1
+        else
+            setStatus("Автосброс выполнен · после возрождения портал → бокс")
+        end
+        return
+    end
+    if os.clock()<nextTarget or not (flags.loop or (flags.kill and not boxResetAt)) then return end
+    local executed,moved,reason=pcall(toTarget,character)
+    nextTarget=os.clock()+numberValue(intervalBox,1,0.05,30)
+    if not executed or not moved then
+        setStatus(tostring(executed and reason or moved),true)
+        return
+    end
+    if flags.kill and not boxResetAt then
+        boxResetCharacter=character
+        boxResetRevision=revision
+        boxResetAt=os.clock()+numberValue(killDelayBox,3,0,60)
+        setStatus("Цель в боксе достигнута · ожидание автосброса")
+    end
+end
 for name,b in pairs(buttons) do
     local key=name
     connect(b.Activated,function()
-        if boxActive and (key=="hamam" or key=="portal" or key=="kill") then
+        if boxActive and (key=="hamam" or key=="portal") then
             setStatus("Сначала выключи бокс, чтобы вернуться на карту",true)
             return
         end
@@ -692,10 +725,8 @@ task.spawn(function()
                     if message~="Cancelled" then setStatus(tostring(message),true) end
                 end
                 nextTarget=os.clock()+numberValue(intervalBox,1,0.05,30)
-            elseif boxCharacter==character and flags.loop and os.clock()>=nextTarget then
-                local ok,moved,reason=pcall(toTarget,character)
-                if not ok or not moved then setStatus(tostring(ok and reason or moved),true) end
-                nextTarget=os.clock()+numberValue(intervalBox,1,0.05,30)
+            elseif boxCharacter==character then
+                stepBoxTarget(character)
             end
         elseif not boxActive and (flags.hamam or flags.portal or flags.loop or flags.kill) and alive(character) then
             local token=revision
