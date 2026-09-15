@@ -393,11 +393,26 @@ connect(boxButton.Activated,function()
         enableBox()
     end
 end)
-connect(RunService.Heartbeat,function()
-    if boxActive and (not alive(boxCharacter) or not boxModel or not boxModel.Parent) then
-        disableBox(alive(boxCharacter)~=nil)
+local boxCheckElapsed=0
+local function checkBox(dt)
+    if not boxActive then boxCheckElapsed=0; return end
+    boxCheckElapsed=boxCheckElapsed+dt
+    if boxCheckElapsed<0.1 then return end
+    boxCheckElapsed=0
+    local root=alive(boxCharacter)
+    if not root or not boxModel or not boxModel.Parent then
+        disableBox(root~=nil)
+        return
     end
-end)
+    local offset=root.Position-BOX_CENTER
+    if math.abs(offset.X)>16 or math.abs(offset.Y)>10 or math.abs(offset.Z)>16 then
+        local ok,moved=pcall(moveRoot,boxCharacter,CFrame.new(BOX_CENTER+Vector3.new(0,-5,0)))
+        if not ok or not moved then
+            setStatus("Не удалось вернуть в бокс · повторная проверка активна",true)
+        end
+    end
+end
+connect(RunService.Heartbeat,checkBox)
 local function sendE(character,token)
     if type(pressKey)~="function" or type(releaseKey)~="function" then return false,"Нет keypress/keyrelease для E" end
     if not valid(character,token) then return false,"Cancelled" end
