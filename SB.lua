@@ -15,7 +15,7 @@ local connections = {}
 local selectedPlayer
 local heldE = false
 local pressKey, releaseKey = keypress, keyrelease
-local flags = {hamam=false, portal=false, kill=false, loop=false, tap=false, afk=false}
+local flags = {hamam=false, portal=false, kill=false, loop=false, tap=false, afk=false, freeze=false}
 local BOX_CENTER = Vector3.new(12000,1500,12000)
 local boxActive,boxModel,boxCharacter,boxReturn = false,nil,nil,nil
 local visited = setmetatable({}, {__mode="k"})
@@ -175,9 +175,9 @@ end
 local targetButton=button(controls,"Выбрать игрока ›",colors.field)
 local boxButton=button(controls,"Бокс · ВЫКЛ",colors.field)
 connect(targetButton.Activated,function() showPage("people") end)
-local names={hamam="Hamam",portal="Цикл портала",kill="Автосброс после цели",loop="Повторный TP",tap="Автонажатие",afk="Anti-AFK"}
+local names={hamam="Hamam",portal="Цикл портала",kill="Автосброс после цели",loop="Повторный TP",tap="Автонажатие",afk="Anti-AFK",freeze="Заморозка"}
 local buttons={}
-for _,name in ipairs({"hamam","portal","kill","loop","tap","afk"}) do
+for _,name in ipairs({"hamam","portal","kill","loop","tap","afk","freeze"}) do
     buttons[name]=button(controls,names[name].." · ВЫКЛ")
 end
 local counter=label(controls,"Завершено циклов: 0")
@@ -187,6 +187,7 @@ local killDelayBox=field("Сброс после цели, сек.","3")
 local beforeEBox=field("Ожидание перед E, сек.","1.5")
 local resetDelayBox=field("Ожидание после E, сек.","3")
 local boxPortalDelay=field("После возрождения: портал → бокс, сек.","1.5")
+local tapRateBox=field("Кликов / активаций в секунду (1–30)","2")
 local tapInfo=label(settingsPage,"Автонажатие: ожидание",58)
 label(settingsPage,"Значение 0 убирает ожидание перед E; это не ускоряет возрождение.",58)
 local optimizeButton=button(settingsPage,"Оптимизация · ВЫКЛ",Color3.fromRGB(53,75,126))
@@ -266,6 +267,47 @@ local function alive(character)
     if not root or not hum or hum.Health<=0 then return nil end
     return root,hum
 end
+local frozenRoot,frozenHumanoid,savedAnchored,savedAutoRotate,frozenCFrame
+local function restoreFreeze()
+    if frozenRoot and frozenRoot.Parent then
+        pcall(function()
+            frozenRoot.AssemblyLinearVelocity=Vector3.zero
+            frozenRoot.AssemblyAngularVelocity=Vector3.zero
+            frozenRoot.Anchored=savedAnchored
+        end)
+    end
+    if frozenHumanoid and frozenHumanoid.Parent then
+        pcall(function() frozenHumanoid.AutoRotate=savedAutoRotate end)
+    end
+    frozenRoot,frozenHumanoid,savedAnchored,savedAutoRotate,frozenCFrame=nil,nil,nil,nil,nil
+end
+local function updateFreeze()
+    local root,hum=alive(player.Character)
+    if not flags.freeze or not root then restoreFreeze(); return end
+    if root~=frozenRoot or hum~=frozenHumanoid then
+        restoreFreeze()
+        frozenRoot,frozenHumanoid=root,hum
+        savedAnchored,savedAutoRotate=root.Anchored,hum.AutoRotate
+        frozenCFrame=root.CFrame
+    end
+    root.Anchored=true
+    if root.CFrame~=frozenCFrame then
+        player.Character:PivotTo(frozenCFrame*root.CFrame:ToObjectSpace(player.Character:GetPivot()))
+    end
+    root.AssemblyLinearVelocity=Vector3.zero
+    root.AssemblyAngularVelocity=Vector3.zero
+    hum.AutoRotate=false
+    hum.Jump=false
+end
+connect(RunService.Heartbeat,function()
+    local ok,err=pcall(updateFreeze)
+    if not ok then
+        flags.freeze=false
+        restoreFreeze()
+        paint()
+        setStatus("Заморозка: "..tostring(err),true)
+    end
+end)
 local function valid(character,token)
     return running and token==revision and alive(character)~=nil
 end
@@ -301,6 +343,7 @@ local function moveRoot(character,cf)
     root.AssemblyLinearVelocity=Vector3.zero
     root.AssemblyAngularVelocity=Vector3.zero
     character:PivotTo(cf*root.CFrame:ToObjectSpace(character:GetPivot()))
+    if flags.freeze and root==frozenRoot then frozenCFrame=root.CFrame end
     return true
 end
 local function toPortal(character,token)
@@ -363,7 +406,7 @@ local function enableBox()
     local character=player.Character
     local root,hum=alive(character)
     if not root then setStatus("Дождись появления персонажа",true); return false end
-    if hum.Sit or root.Anchored then
+    if hum.Sit or (root.Anchored and root~=frozenRoot) then
         setStatus("Сначала встань с сиденья и дождись возможности двигаться",true)
         return false
     end
@@ -673,6 +716,7 @@ for name,b in pairs(buttons) do
             return
         end
         flags[key]=not flags[key]
+        if key=="freeze" and not flags.freeze then restoreFreeze() end
         if key=="hamam" and flags.hamam then flags.portal=false; flags.loop=false; flags.kill=false
         elseif (key=="portal" or key=="loop" or key=="kill") and flags[key] then flags.hamam=false end
         if key=="hamam" or key=="portal" or key=="loop" or key=="kill" then
@@ -684,6 +728,7 @@ for name,b in pairs(buttons) do
 end
 connect(stopButton.Activated,function()
     for key in pairs(flags) do flags[key]=false end
+    restoreFreeze()
     if boxActive then disableBox(true) end
     revision=revision+1; nextAttempt=0; releaseE(); paint(); setStatus("Режимы остановлены")
 end)
@@ -692,6 +737,7 @@ connect(player.CharacterAdded,function()
     if flags.hamam or flags.portal or flags.loop or flags.kill then setStatus("Ожидание готовности персонажа") end
 end)
 connect(player.CharacterRemoving,function(character)
+    if frozenRoot and frozenRoot:IsDescendantOf(character) then restoreFreeze() end
     if boxCharacter==character then
         boxCharacter,boxReturn=nil,nil
         setStatus("Бокс сохранён · ожидание возрождения")
@@ -759,7 +805,7 @@ local function releaseTool()
     if activeTool then pcall(function() activeTool:Deactivate() end) end
     activeTool=nil
 end
-local function autoTap()
+local function autoTap(holdDuration)
     local character=player.Character
     if not running or not flags.tap or not alive(character) then return false,"Ожидание персонажа" end
     local tool=character:FindFirstChildOfClass("Tool")
@@ -769,7 +815,7 @@ local function autoTap()
         activeTool=tool
         local ok,err=pcall(function() tool:Activate() end)
         if not ok then releaseTool(); return false,tostring(err) end
-        task.wait(0.05)
+        task.wait(holdDuration or 0.05)
         releaseTool()
         return true,"Активация предмета отправлена"
     end
@@ -780,20 +826,32 @@ local function autoTap()
     return ok,ok and "Клик отправлен · предмет не выбран" or tostring(err)
 end
 task.spawn(function()
+    local lastTap=-math.huge
     while running do
-        if flags.tap then
-            local executed,ok,message=pcall(autoTap)
+        local interval=1/numberValue(tapRateBox,2,1,30)
+        local elapsed=os.clock()-lastTap
+        if flags.tap and elapsed>=interval then
+            lastTap=os.clock()
+            local executed,ok,message=pcall(autoTap,math.min(0.05,interval*0.4))
             if running then
                 tapInfo.Text="Автонажатие: "..tostring(executed and message or ok)
                 tapInfo.TextColor3=executed and ok and colors.muted or colors.error
             end
         end
-        task.wait(0.5)
+        if flags.tap then
+            local remaining=1/numberValue(tapRateBox,2,1,30)-(os.clock()-lastTap)
+            task.wait(math.max(0,math.min(0.05,remaining)))
+        else
+            lastTap=-math.huge
+            task.wait(0.1)
+        end
     end
 end)
 local cleanup
 cleanup=function()
     if not running then return end
+    flags.freeze=false
+    restoreFreeze()
     disableBox(true)
     running=false; revision=revision+1; generation=generation+1; optimized=false
     releaseTool()
