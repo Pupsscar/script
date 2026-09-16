@@ -21,10 +21,10 @@ local boxActive,boxModel,boxCharacter,boxReturn = false,nil,nil,nil
 local visited = setmetatable({}, {__mode="k"})
 local progress = setmetatable({}, {__mode="k"})
 local colors = {
-    bg=Color3.fromRGB(16,18,29), panel=Color3.fromRGB(30,34,51),
-    field=Color3.fromRGB(40,46,66), accent=Color3.fromRGB(132,113,255),
-    active=Color3.fromRGB(40,119,92), text=Color3.fromRGB(245,246,255),
-    muted=Color3.fromRGB(183,193,213), error=Color3.fromRGB(255,161,153),
+    bg=Color3.fromRGB(18,16,12), panel=Color3.fromRGB(36,30,20),
+    field=Color3.fromRGB(27,24,17), accent=Color3.fromRGB(255,184,64),
+    active=Color3.fromRGB(57,76,34), text=Color3.fromRGB(255,222,155),
+    muted=Color3.fromRGB(208,184,137), error=Color3.fromRGB(255,145,120),
 }
 
 local function connect(signal, callback)
@@ -41,7 +41,7 @@ local function make(class, parent, properties)
 end
 
 local function round(object, radius)
-    make("UICorner", object, {CornerRadius=UDim.new(0,radius or 12)})
+    make("UICorner", object, {CornerRadius=UDim.new(0,2)})
 end
 
 local parent = player:WaitForChild("PlayerGui")
@@ -63,34 +63,38 @@ local window = make("Frame", screen, {
     BorderSizePixel=0, ClipsDescendants=true,
 })
 round(window,18)
-make("UIStroke",window,{Color=colors.accent,Transparency=0.4})
+make("UIStroke",window,{Color=colors.accent,Thickness=2,Transparency=0.1})
 local header = make("Frame",window,{
     Size=UDim2.new(1,0,0,64), BackgroundColor3=colors.panel, BorderSizePixel=0,
 })
 make("UIGradient",header,{
-    Rotation=15, Color=ColorSequence.new(Color3.fromRGB(230,195,255),Color3.fromRGB(145,219,255)),
+    Rotation=90, Color=ColorSequence.new(Color3.fromRGB(255,238,198),Color3.fromRGB(175,142,89)),
 })
 make("TextLabel",header,{
     Position=UDim2.fromOffset(16,7),Size=UDim2.new(1,-126,0,29),
-    BackgroundTransparency=1,Text="HAMAM",TextSize=24,Font=Enum.Font.GothamBold,
+    BackgroundTransparency=1,Text="HAMAM // RETRO",TextSize=22,Font=Enum.Font.Code,
     TextColor3=colors.text,TextXAlignment=Enum.TextXAlignment.Left,
 })
 local fpsLabel = make("TextLabel",header,{
     Position=UDim2.fromOffset(16,37),Size=UDim2.new(1,-126,0,18),
-    BackgroundTransparency=1,Text="MuMu · FPS: —",TextSize=14,Font=Enum.Font.Gotham,
+    BackgroundTransparency=1,Text="TERMINAL 01 | FPS: —",TextSize=15,Font=Enum.Font.Code,
     TextColor3=colors.muted,TextXAlignment=Enum.TextXAlignment.Left,
 })
 local function headerButton(text,x,color)
     local b=make("TextButton",header,{
         Position=UDim2.new(1,x,0,10),Size=UDim2.fromOffset(44,44),
         BackgroundColor3=color,Text=text,TextSize=24,TextColor3=colors.text,
-        Font=Enum.Font.GothamBold,
+        Font=Enum.Font.Code,
     })
     round(b)
     return b
 end
 local minimize=headerButton("−",-102,colors.field)
-local close=headerButton("×",-52,Color3.fromRGB(110,49,66))
+local close=headerButton("×",-52,Color3.fromRGB(86,38,24))
+make("Frame",header,{
+    Position=UDim2.new(0,0,1,-2),Size=UDim2.new(1,0,0,2),
+    BackgroundColor3=colors.accent,BorderSizePixel=0,Active=false,
+})
 local content=make("Frame",window,{
     Position=UDim2.fromOffset(0,64),Size=UDim2.new(1,0,1,-64),BackgroundTransparency=1,
 })
@@ -100,8 +104,8 @@ local tabBar=make("Frame",content,{
 make("UIListLayout",tabBar,{FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,6)})
 local status=make("TextLabel",content,{
     Position=UDim2.new(0,12,1,-76),Size=UDim2.new(1,-24,0,64),
-    BackgroundColor3=colors.panel,Text="Готово",TextSize=15,TextWrapped=true,
-    Font=Enum.Font.Gotham,TextColor3=colors.muted,
+    BackgroundColor3=colors.panel,Text="Система готова",TextSize=17,TextWrapped=true,
+    Font=Enum.Font.Code,TextColor3=colors.muted,
 })
 round(status)
 make("UIPadding",status,{PaddingLeft=UDim.new(0,10),PaddingRight=UDim.new(0,10)})
@@ -109,7 +113,7 @@ local pages,tabs,orders={},{},{}
 local function createPage(name,title)
     tabs[name]=make("TextButton",tabBar,{
         Size=UDim2.new(1/3,-4,1,0),BackgroundColor3=colors.panel,
-        Text=title,TextSize=14,Font=Enum.Font.GothamBold,TextColor3=colors.text,
+        Text=title,TextSize=17,Font=Enum.Font.Code,TextColor3=colors.text,
     })
     round(tabs[name],10)
     local page=make("ScrollingFrame",content,{
@@ -134,6 +138,7 @@ local function showPage(name)
     for key,page in pairs(pages) do
         page.Visible=key==name
         tabs[key].BackgroundColor3=key==name and colors.accent or colors.panel
+        tabs[key].TextColor3=key==name and colors.bg or colors.text
     end
 end
 for name,tab in pairs(tabs) do
@@ -148,18 +153,18 @@ local function label(container,text,height)
     return make("TextLabel",container,{
         LayoutOrder=order(container),Size=UDim2.new(1,0,0,height or 32),
         BackgroundTransparency=1,Text=text,TextSize=16,TextWrapped=true,
-        Font=Enum.Font.Gotham,TextColor3=colors.muted,TextXAlignment=Enum.TextXAlignment.Left,
+        Font=Enum.Font.Code,TextColor3=colors.muted,TextXAlignment=Enum.TextXAlignment.Left,
     })
 end
 local function button(container,text,color)
     local b=make("TextButton",container,{
         LayoutOrder=order(container),Size=UDim2.new(1,0,0,58),
-        BackgroundColor3=color or colors.panel,Text=text,TextSize=17,TextWrapped=true,
-        Font=Enum.Font.GothamBold,TextColor3=colors.text,
+        BackgroundColor3=color or colors.panel,Text=text,TextSize=19,TextWrapped=true,
+        Font=Enum.Font.Code,TextColor3=colors.text,
     })
     round(b,13)
-    make("UIStroke",b,{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=colors.accent,Transparency=0.75})
-    make("UIGradient",b,{Rotation=90,Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(195,203,230))})
+    make("UIStroke",b,{ApplyStrokeMode=Enum.ApplyStrokeMode.Border,Color=colors.accent,Transparency=0.45})
+    make("UIGradient",b,{Rotation=90,Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(190,171,135))})
     return b
 end
 local function field(title,default)
@@ -167,7 +172,7 @@ local function field(title,default)
     local b=make("TextBox",settingsPage,{
         LayoutOrder=order(settingsPage),Size=UDim2.new(1,0,0,52),
         BackgroundColor3=colors.field,Text=default,ClearTextOnFocus=false,
-        TextSize=19,Font=Enum.Font.Gotham,TextColor3=colors.text,
+        TextSize=21,Font=Enum.Font.Code,TextColor3=colors.text,
     })
     round(b)
     return b
@@ -181,23 +186,23 @@ for _,name in ipairs({"hamam","portal","kill","loop","tap","afk","freeze"}) do
     buttons[name]=button(controls,names[name].." · ВЫКЛ")
 end
 local counter=label(controls,"Завершено циклов: 0")
-local stopButton=button(controls,"Остановить режимы",Color3.fromRGB(110,49,66))
+local stopButton=button(controls,"Остановить режимы",Color3.fromRGB(86,38,24))
 local intervalBox=field("Интервал повторного TP, сек.","1")
-local killDelayBox=field("Сброс после цели, сек.","3")
+local killDelayBox=field("Сброс после цели, сек. (0–86400)","400")
 local beforeEBox=field("Ожидание перед E, сек.","1.5")
 local resetDelayBox=field("Ожидание после E, сек.","3")
 local boxPortalDelay=field("После возрождения: портал → бокс, сек.","1.5")
 local tapRateBox=field("Кликов / активаций в секунду (1–30)","2")
 local tapInfo=label(settingsPage,"Автонажатие: ожидание",58)
 label(settingsPage,"Значение 0 убирает ожидание перед E; это не ускоряет возрождение.",58)
-local optimizeButton=button(settingsPage,"Оптимизация · ВЫКЛ",Color3.fromRGB(53,75,126))
+local optimizeButton=button(settingsPage,"Оптимизация · ВЫКЛ",Color3.fromRGB(72,56,27))
 local optimizeInfo=label(settingsPage,"Графика не изменена",64)
 local afkTest=button(settingsPage,"Проверить отправку Anti-AFK")
 local afkInfo=label(settingsPage,"Anti-AFK: ещё не проверен",70)
 local search=make("TextBox",people,{
     LayoutOrder=order(people),Size=UDim2.new(1,0,0,52),BackgroundColor3=colors.field,
     Text="",PlaceholderText="Поиск по имени...",ClearTextOnFocus=false,
-    TextSize=18,Font=Enum.Font.Gotham,TextColor3=colors.text,PlaceholderColor3=colors.muted,
+    TextSize=18,Font=Enum.Font.Code,TextColor3=colors.text,PlaceholderColor3=colors.muted,
 })
 round(search)
 local list=make("Frame",people,{
@@ -227,7 +232,7 @@ local function refresh(excluded)
         if other~=player and other~=excluded and (query=="" or other.Name:lower():find(query,1,true) or other.DisplayName:lower():find(query,1,true)) then
             local b=button(list,other.DisplayName.."\n@"..other.Name,other==selectedPlayer and colors.active or colors.panel)
             b.Size=UDim2.new(1,0,0,66)
-            b.TextSize=16
+            b.TextSize=18
             b.Activated:Connect(function() selectedPlayer=other; refresh(); showPage("controls") end)
         end
     end
@@ -250,7 +255,7 @@ local frameCount,frameTime=0,0
 connect(RunService.RenderStepped,function(dt)
     frameCount=frameCount+1; frameTime=frameTime+dt
     if frameTime>=1 then
-        fpsLabel.Text=string.format("MuMu · FPS: %.0f",frameCount/frameTime)
+        fpsLabel.Text=string.format("TERMINAL 01 | FPS: %.0f",frameCount/frameTime)
         frameCount,frameTime=0,0
     end
 end)
@@ -529,7 +534,7 @@ local function runCycle(character,token)
     ok,err=toTarget(character)
     if not ok then return false,err end
     if flags.kill then
-        if not waitActive(numberValue(killDelayBox,3,0,60),character,token) then return false,"Cancelled" end
+        if not waitActive(numberValue(killDelayBox,3,0,86400),character,token) then return false,"Cancelled" end
         if flags.kill then return resetCharacter(character,token) end
     end
     setStatus("Цель достигнута")
@@ -704,7 +709,7 @@ local function stepBoxTarget(character)
     if flags.kill and not boxResetAt then
         boxResetCharacter=character
         boxResetRevision=revision
-        boxResetAt=os.clock()+numberValue(killDelayBox,3,0,60)
+        boxResetAt=os.clock()+numberValue(killDelayBox,3,0,86400)
         setStatus("Цель в боксе достигнута · ожидание автосброса")
     end
 end
