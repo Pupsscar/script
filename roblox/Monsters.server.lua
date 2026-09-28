@@ -55,10 +55,15 @@ local function aliveCharacter(character)
 	return humanoid ~= nil and humanoid.Health > 0 and character:FindFirstChild("HumanoidRootPart") ~= nil
 end
 
+local function isInfected(character)
+	return character ~= nil and character:GetAttribute("Infected") == true
+end
+
+-- everything the monsters hunt; infected players belong to the flesh and are left alone
 local function livingTargets()
 	local list = {}
 	for _, plr in ipairs(Players:GetPlayers()) do
-		if aliveCharacter(plr.Character) then table.insert(list, plr.Character) end
+		if aliveCharacter(plr.Character) and not isInfected(plr.Character) then table.insert(list, plr.Character) end
 	end
 	local npcFolder = workspace:FindFirstChild("NPCs")
 	if npcFolder then
@@ -270,12 +275,107 @@ local function buildBareModel()
 	return model
 end
 
+local FLESH_COLORS = {
+	Color3.fromRGB(132, 30, 34), Color3.fromRGB(110, 22, 28), Color3.fromRGB(150, 52, 52),
+	Color3.fromRGB(88, 14, 20), Color3.fromRGB(160, 78, 72),
+}
+
+local function weldBlob(parent, part, localCF, size, color, reflect)
+	local blob = Instance.new("Part")
+	blob.Name = "GS_Blob"
+	blob.Size = size
+	blob.Color = color
+	blob.Material = Enum.Material.SmoothPlastic
+	blob.Reflectance = reflect or 0.1
+	blob.CanCollide, blob.CanQuery, blob.CanTouch, blob.CastShadow, blob.Massless = false, false, false, false, true
+	local mesh = Instance.new("SpecialMesh")
+	mesh.MeshType = Enum.MeshType.Sphere
+	mesh.Parent = blob
+	blob.CFrame = part.CFrame * localCF
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = part
+	weld.Part1 = blob
+	weld.Parent = blob
+	blob.Parent = parent
+	return blob
+end
+
+local function coloredModel(color)
+	local desc = Instance.new("HumanoidDescription")
+	for _, key in ipairs({"HeadColor", "TorsoColor", "LeftArmColor", "RightArmColor", "LeftLegColor", "RightLegColor"}) do
+		desc[key] = color
+	end
+	local ok, model = pcall(function()
+		return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R6)
+	end)
+	if not ok or not model then return nil end
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BaseScript") or d:IsA("Decal") then d:Destroy() end
+	end
+	return model
+end
+
+-- A-013: a walking heap of meat. Lumps everywhere, no face at all.
+local function buildFleshModel()
+	local model = coloredModel(FLESH_COLORS[1])
+	if not model then return nil end
+	for _, part in ipairs(model:GetChildren()) do
+		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+			part.Color = FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)]
+			part.Reflectance = 0.12
+			local count = part.Name == "Torso" and 9 or (part.Name == "Head" and 6 or 4)
+			for _ = 1, count do
+				local half = part.Size / 2
+				local offset = Vector3.new(rng:NextNumber(-half.X, half.X), rng:NextNumber(-half.Y, half.Y), rng:NextNumber(-half.Z, half.Z))
+				local r = rng:NextNumber(0.45, part.Name == "Torso" and 1.3 or 0.85)
+				weldBlob(part, part, CFrame.new(offset), Vector3.new(r, r * rng:NextNumber(0.7, 1.2), r),
+					FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)], rng:NextNumber(0.05, 0.25))
+			end
+		end
+	end
+	local head = model:FindFirstChild("Head")
+	if head then
+		-- a single wet vertical mouth where a face should be
+		weldBlob(head, head, CFrame.new(0, -0.05, -0.55), Vector3.new(0.22, 0.75, 0.3), Color3.fromRGB(20, 2, 4), 0.3)
+	end
+	return model
+end
+
+-- C-207: blind, long ears, a slit instead of a face
+local function buildListenerModel()
+	local skin = Color3.fromRGB(58, 60, 66)
+	local model = coloredModel(skin)
+	if not model then return nil end
+	for _, part in ipairs(model:GetChildren()) do
+		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+			part.Material = Enum.Material.SmoothPlastic
+		end
+	end
+	local head = model:FindFirstChild("Head")
+	if head then
+		local dark = Color3.fromRGB(34, 35, 40)
+		for _, side in ipairs({-1, 1}) do
+			weldBlob(head, head, CFrame.new(side * 0.72, 0.35, 0.05) * CFrame.Angles(0, 0, side * math.rad(-28)),
+				Vector3.new(0.14, 1.3, 0.7), dark, 0.05)
+			weldBlob(head, head, CFrame.new(side * 0.2, 0.12, -0.52), Vector3.new(0.18, 0.1, 0.1), dark, 0)
+		end
+		weldBlob(head, head, CFrame.new(0, -0.18, -0.55), Vector3.new(0.12, 0.55, 0.14), Color3.fromRGB(8, 6, 6), 0)
+	end
+	return model
+end
+
 local function buildModel(id, cframe)
 	local data = MonsterData.Get(id)
 	if not data then return nil, "unknown object" end
 	local model
 	if data.kind == "skinwalker" then
 		model = buildBareModel()
+		if not model then return nil, "could not build the body" end
+	elseif data.kind == "flesh" then
+		model = buildFleshModel()
+		if not model then return nil, "could not build the body" end
+	elseif data.kind == "listener" then
+		model = buildListenerModel()
 		if not model then return nil, "could not build the body" end
 	else
 		local template = getTemplate()
@@ -309,7 +409,9 @@ local function buildModel(id, cframe)
 		model:SetAttribute("GS_Twitch", true)
 		model:SetAttribute("Typing", false)
 		applyBareLook(model)
-	else
+	elseif data.kind == "listener" then
+		model:SetAttribute("GS_Twitch", true)
+	elseif data.kind == "stalker" then
 
 		for _, part in ipairs(head:GetChildren()) do
 			if part:IsA("BasePart") and part.Name == "Eye" then
@@ -716,6 +818,7 @@ local function freshestTrailPoint(brain, radius)
 end
 
 local LIMB_WEIGHTS = {LeftArm = 3, RightArm = 3, LeftLeg = 3, RightLeg = 3, Head = 1}
+local onFleshKill
 local function hitVictim(brain, character)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then return end
@@ -738,7 +841,10 @@ local function hitVictim(brain, character)
 	character:SetAttribute("LastDamageTime", serverNow())
 	if total <= 0 then
 		humanoid:TakeDamage(12)
-		if humanoid.Health <= 0 then character:SetAttribute("DeathCause", cause) end
+		if humanoid.Health <= 0 then
+			character:SetAttribute("DeathCause", cause)
+			if brain.data.kind == "flesh" and onFleshKill then onFleshKill(brain, character) end
+		end
 		return
 	end
 	local roll = rng:NextNumber(0, total)
@@ -749,14 +855,19 @@ local function hitVictim(brain, character)
 	end
 	local level = (character:GetAttribute("Injury_" .. part) or 0) + 1
 	humanoid:TakeDamage((brain.data.damageBase or 4) + level * (brain.data.damagePerLevel or 3))
-	if humanoid.Health <= 0 then
-		character:SetAttribute("DeathCause", cause)
-		return
+	if humanoid.Health > 0 then
+		FallDamageController.Injure(character, part, level)
+		if level >= 3 then
+			brain.eatPriorityUntil = os.clock() + 20
+		end
 	end
-	FallDamageController.Injure(character, part, level)
-	if level >= 3 then
-		brain.eatPriorityUntil = os.clock() + 20
-	end
+	task.defer(function()
+		if humanoid.Health > 0 then return end
+		if not character:GetAttribute("DeathCause") or character:GetAttribute("DeathCause") == "UNKNOWN" then
+			character:SetAttribute("DeathCause", cause)
+		end
+		if brain.data.kind == "flesh" and onFleshKill then onFleshKill(brain, character) end
+	end)
 end
 
 -- chase + swing shared by both monsters; returns false while the target can't be reached
@@ -856,6 +967,7 @@ local function ambientSounds(brain, now)
 	end
 end
 
+local onCorpseEaten
 local function eatStep(brain, now, nextState)
 	local model, root = brain.model, brain.root
 	local food = brain.food
@@ -864,6 +976,7 @@ local function eatStep(brain, now, nextState)
 	local function finish()
 		brain.eatingUntil = nil
 		brain.eatPriorityUntil = 0
+		if isCorpse and food and onCorpseEaten then onCorpseEaten(brain, food) end
 		if food and food.Parent then food:Destroy() end
 		brain.food = nil
 		setState(brain, nextState())
@@ -895,6 +1008,8 @@ local function eatStep(brain, now, nextState)
 
 			if eaten and eaten.Parent then
 				fx(brain, "Hit")
+				local list = food:GetAttribute("EatenParts")
+				food:SetAttribute("EatenParts", (list and list ~= "" and (list .. ",") or "") .. eaten.Name)
 				eaten:Destroy()
 			end
 			if foodPiece(food) then
@@ -1346,6 +1461,356 @@ local function thinkSkinwalker(brain)
 	return true
 end
 
+-- ===== A-013 "The Flesh" and infection =====
+local PART_KEY = {Head = "Head", Torso = "Torso", ["Left Arm"] = "LeftArm", ["Right Arm"] = "RightArm",
+	["Left Leg"] = "LeftLeg", ["Right Leg"] = "RightLeg"}
+local PART_NAME = {Head = "Head", Torso = "Torso", LeftArm = "Left Arm", RightArm = "Right Arm",
+	LeftLeg = "Left Leg", RightLeg = "Right Leg"}
+local INFECT_FALLBACK = 30
+local pendingInfection = {}
+
+local function splitList(text)
+	local out = {}
+	for item in string.gmatch(text or "", "[^,]+") do out[item] = true end
+	return out
+end
+
+local function reviveInfected(plr, partSet, position)
+	if not plr.Parent then return end
+	if aliveCharacter(plr.Character) then
+		plr:SetAttribute("InfectPending", nil)
+		return
+	end
+	pendingInfection[plr] = nil
+	local keys = {}
+	for key in pairs(partSet) do table.insert(keys, key) end
+	plr:SetAttribute("Infected", true)
+	plr:SetAttribute("InfectPending", true)
+	plr:SetAttribute("FleshParts", table.concat(keys, ","))
+	plr:SetAttribute("InfectSpawn", position)
+	plr:LoadCharacter()
+end
+
+-- killed by the flesh: the respawn menu stops working the moment you die
+function onFleshKill(brain, character)
+	local plr = Players:GetPlayerFromCharacter(character)
+	if not plr or plr:GetAttribute("InfectPending") then return end
+	plr:SetAttribute("InfectPending", true)
+	local lost = {}
+	for key in pairs(PART_NAME) do
+		if (character:GetAttribute("Injury_" .. key) or 0) >= 3 then lost[key] = true end
+	end
+	local root = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Torso")
+	local token = {}
+	pendingInfection[plr] = token
+	local position = root and root.Position or brain.root.Position
+	brain.eatPriorityUntil = os.clock() + 25
+	task.delay(INFECT_FALLBACK, function()
+		-- the flesh never got to the body: bring them back anyway
+		if pendingInfection[plr] == token then reviveInfected(plr, lost, position) end
+	end)
+end
+
+function onCorpseEaten(brain, corpse)
+	if brain.data.kind ~= "flesh" then return end
+	local userId = corpse:GetAttribute("CorpseUserId")
+	local plr = userId and Players:GetPlayerByUserId(userId)
+	if not plr or aliveCharacter(plr.Character) then return end
+	local parts = splitList(corpse:GetAttribute("LostParts"))
+	for name in pairs(splitList(corpse:GetAttribute("EatenParts"))) do
+		if PART_KEY[name] then parts[PART_KEY[name]] = true end
+	end
+	-- whatever is left of the corpse right now also counts as taken
+	for _, child in ipairs(corpse:GetChildren()) do
+		if child:IsA("BasePart") and PART_KEY[child.Name] then parts[PART_KEY[child.Name]] = true end
+	end
+	reviveInfected(plr, parts, brain.root.Position + brain.root.CFrame.LookVector * 3)
+end
+
+local function fleshShell(character, key)
+	local part = character:FindFirstChild(PART_NAME[key])
+	if not part or not part:IsA("BasePart") then return end
+	local old = part:FindFirstChild("GS_FleshShell")
+	if old then old:Destroy() end
+	local holder = Instance.new("Folder")
+	holder.Name = "GS_FleshShell"
+	holder.Parent = part
+	local shell = Instance.new("Part")
+	shell.Name = "Shell"
+	shell.Size = part.Size * 1.05
+	shell.Color = FLESH_COLORS[rng:NextInteger(1, 3)]
+	shell.Material = Enum.Material.SmoothPlastic
+	shell.Reflectance = 0.14
+	shell.CanCollide, shell.CanQuery, shell.CanTouch, shell.CastShadow, shell.Massless = false, false, false, false, true
+	if key == "Head" then
+		local mesh = Instance.new("SpecialMesh")
+		mesh.MeshType = Enum.MeshType.Head
+		mesh.Scale = Vector3.new(1.3, 1.3, 1.3)
+		mesh.Parent = shell
+	end
+	shell.CFrame = part.CFrame
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = part
+	weld.Part1 = shell
+	weld.Parent = shell
+	shell.Parent = holder
+	for _ = 1, key == "Torso" and 5 or 3 do
+		local half = part.Size / 2
+		local offset = Vector3.new(rng:NextNumber(-half.X, half.X), rng:NextNumber(-half.Y, half.Y), rng:NextNumber(-half.Z, half.Z))
+		local r = rng:NextNumber(0.3, 0.7)
+		weldBlob(holder, part, CFrame.new(offset), Vector3.new(r, r, r), FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)], 0.2)
+	end
+end
+
+local function infectCharacter(plr, character)
+	local spawnAt = plr:GetAttribute("InfectSpawn")
+	character:SetAttribute("Infected", true)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	local root = character:WaitForChild("HumanoidRootPart", 10)
+	if not humanoid or not root then return end
+	if typeof(spawnAt) == "Vector3" then
+		character:SetAttribute("AC_TeleportAt", serverNow())
+		character:PivotTo(CFrame.new(spawnAt + Vector3.new(0, 3, 0)))
+	end
+	if not plr:HasAppearanceLoaded() then
+		local done = false
+		local conn = plr.CharacterAppearanceLoaded:Connect(function() done = true end)
+		local waited = 0
+		while not done and waited < 5 do waited += task.wait(0.1) end
+		conn:Disconnect()
+	end
+	if plr.Character ~= character then return end
+	humanoid.MaxHealth = 150
+	humanoid.Health = 150
+	for key in pairs(splitList(plr:GetAttribute("FleshParts"))) do
+		if PART_NAME[key] then fleshShell(character, key) end
+	end
+	local head = character:FindFirstChild("Head")
+	if head then
+		local tag = Instance.new("BillboardGui")
+		tag.Name = "GS_InfectedTag"
+		tag.Size = UDim2.fromOffset(160, 22)
+		tag.StudsOffset = Vector3.new(0, 3.3, 0)
+		tag.MaxDistance = 60
+		tag.LightInfluence = 0
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.SpecialElite
+		label.Text = "INFECTED"
+		label.TextSize = 16
+		label.TextColor3 = Color3.fromRGB(190, 20, 20)
+		label.TextStrokeTransparency = 0.4
+		label.Parent = tag
+		tag.Parent = head
+	end
+	plr:SetAttribute("InfectPending", nil)
+	plr:SetAttribute("InfectSpawn", nil)
+	humanoid.Died:Connect(function()
+		-- the infection dies with the body
+		if plr.Character == character then
+			plr:SetAttribute("Infected", nil)
+			plr:SetAttribute("FleshParts", nil)
+		end
+	end)
+end
+
+local function onPlayerCharacter(plr, character)
+	if plr:GetAttribute("Infected") and plr:GetAttribute("InfectSpawn") then
+		infectCharacter(plr, character)
+	else
+		plr:SetAttribute("Infected", nil)
+		plr:SetAttribute("FleshParts", nil)
+		plr:SetAttribute("InfectPending", nil)
+		pendingInfection[plr] = nil
+	end
+end
+local function watchPlayer(plr)
+	plr.CharacterAdded:Connect(function(character) onPlayerCharacter(plr, character) end)
+end
+for _, plr in ipairs(Players:GetPlayers()) do watchPlayer(plr) end
+Players.PlayerAdded:Connect(watchPlayer)
+Players.PlayerRemoving:Connect(function(plr) pendingInfection[plr] = nil end)
+
+local function thinkFlesh(brain)
+	local now = os.clock()
+	local model = brain.model
+	if not model.Parent then return false end
+	local root = brain.root
+	local speed = HUMAN_SPEED * (brain.data.speedMultiplier or 0.95)
+
+	if brain.target and not aliveCharacter(brain.target) or (brain.target and isInfected(brain.target)) then
+		setTarget(brain, nil)
+		if brain.state == "chase" then setState(brain, "roam") end
+	end
+	if brain.target and canSee(brain, brain.target) then brain.lastSeen = now end
+	if now < (brain.staggerUntil or 0) then
+		stop(brain)
+		return true
+	end
+
+	local targetRoot = brain.target and brain.target:FindFirstChild("HumanoidRootPart")
+	local distance = targetRoot and flat(targetRoot.Position - root.Position).Magnitude or math.huge
+	if brain.state ~= "eat" and (distance > 35 or now < (brain.eatPriorityUntil or 0)) then
+		local food = nearestFood(brain, now < (brain.eatPriorityUntil or 0) and 120 or 80)
+		if food then
+			brain.food = food
+			setState(brain, "eat")
+		end
+	end
+
+	local state = brain.state
+	if state == "roam" or state == "track" then
+		local found = pickTarget(brain)
+		if found then
+			setTarget(brain, found)
+			setState(brain, "chase")
+			fx(brain, "Shriek")
+		else
+			local point = freshestTrailPoint(brain, 160)
+			if point then
+				if state ~= "track" then setState(brain, "track") end
+				if goTo(brain, point.pos, WALK_SPEED + 2) or (point.pos - root.Position).Magnitude < 4 then
+					brain.trailFloor = point.t
+				end
+			else
+				if state ~= "roam" then setState(brain, "roam") end
+				if not brain.roamGoal or now > brain.roamUntil then
+					brain.roamGoal = groundSpot(root.Position, 20, 55)
+					brain.roamUntil = now + rng:NextNumber(6, 11)
+				end
+				if goTo(brain, brain.roamGoal, WALK_SPEED * 0.8) then brain.roamUntil = now end
+			end
+		end
+	elseif state == "chase" then
+		if not targetRoot or now - brain.lastSeen > 12 then
+			setState(brain, "track")
+		else
+			attackStep(brain, now, targetRoot, speed, "chase", brain.data.swingCooldown or 1.3, 0.32)
+		end
+	elseif state == "eat" then
+		eatStep(brain, now, function()
+			if brain.target and aliveCharacter(brain.target) then return "chase" end
+			return "roam"
+		end)
+	end
+
+	if now >= (brain.nextSound or 0) then
+		brain.nextSound = now + rng:NextNumber(3, 7)
+		fx(brain, brain.state == "chase" and "Growl" or "Ambient")
+	end
+	return true
+end
+
+-- ===== C-207 "The Listener": blind, hunts by sound =====
+local lastNoise = {}
+local function loudness(character)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then return 0 end
+	local vel = root.AssemblyLinearVelocity
+	local noise = 0
+	local speed = flat(vel).Magnitude
+	if speed > 12 then noise = speed end
+	if vel.Y > 10 then noise = math.max(noise, 18) end
+	if character:GetAttribute("Ragdolled") then noise = math.max(noise, 20) end
+	local extra = lastNoise[character]
+	if extra and os.clock() - extra < 1 then noise = math.max(noise, 26) end
+	return noise
+end
+
+local function listen(brain)
+	local best, bestScore, bestPos = nil, 0, nil
+	for _, character in ipairs(livingTargets()) do
+		local noise = loudness(character)
+		if noise > 0 then
+			local d = (character.HumanoidRootPart.Position - brain.root.Position).Magnitude
+			local score = noise * 4 - d
+			if score > bestScore then best, bestScore, bestPos = character, score, character.HumanoidRootPart.Position end
+		end
+	end
+	return best, bestPos
+end
+
+local function thinkListener(brain)
+	local now = os.clock()
+	local model = brain.model
+	if not model.Parent then return false end
+	local root = brain.root
+	if brain.target and (not aliveCharacter(brain.target) or isInfected(brain.target)) then setTarget(brain, nil) end
+	if now < (brain.staggerUntil or 0) then
+		stop(brain)
+		return true
+	end
+
+	local heard, heardPos = listen(brain)
+	if heard then
+		brain.noisePos = heardPos
+		brain.lastHeard = now
+		if brain.target ~= heard then setTarget(brain, heard) end
+	end
+	local targetRoot = brain.target and brain.target:FindFirstChild("HumanoidRootPart")
+	local distance = targetRoot and flat(targetRoot.Position - root.Position).Magnitude or math.huge
+	local state = brain.state
+
+	if state == "roam" then
+		if heard then
+			setState(brain, distance < 14 and "hunt" or "investigate")
+			fx(brain, "Growl")
+		else
+			if not brain.roamGoal or now > brain.roamUntil then
+				brain.roamGoal = groundSpot(root.Position, 15, 45)
+				brain.roamUntil = now + rng:NextNumber(7, 13)
+			end
+			if goTo(brain, brain.roamGoal, WALK_SPEED * 0.6) then brain.roamUntil = now end
+		end
+	elseif state == "investigate" then
+		if heard and distance < 14 then
+			setState(brain, "hunt")
+		elseif not brain.noisePos then
+			setState(brain, "roam")
+		else
+			local arrived = goTo(brain, brain.noisePos, HUMAN_SPEED * 1.1)
+			if arrived or flat(brain.noisePos - root.Position).Magnitude < 4 then setState(brain, "listen") end
+		end
+	elseif state == "hunt" then
+		if not targetRoot then
+			setState(brain, "listen")
+		elseif now - (brain.lastHeard or 0) > 1.5 then
+			-- they froze: it can't find them any more
+			setState(brain, "listen")
+		else
+			attackStep(brain, now, targetRoot, HUMAN_SPEED * (brain.data.speedMultiplier or 1.25), "hunt", brain.data.swingCooldown or 1, 0.22)
+		end
+	elseif state == "listen" then
+		stop(brain)
+		if brain.noisePos then face(brain, brain.noisePos) end
+		if heard then
+			setState(brain, distance < 14 and "hunt" or "investigate")
+		elseif now - brain.stateSince > rng:NextNumber(4, 6) then
+			brain.noisePos = nil
+			setTarget(brain, nil)
+			setState(brain, "roam")
+		end
+	end
+
+	if now >= (brain.nextSound or 0) then
+		brain.nextSound = now + rng:NextNumber(4, 9)
+		if brain.state ~= "hunt" then fx(brain, "Ambient") end
+	end
+	return true
+end
+
+-- players hitting players: the infected hunt survivors, survivors fight back
+local function strikeCharacter(striker, victim)
+	local fake = {
+		model = striker,
+		data = {kind = "player", deathCause = isInfected(striker) and "INFECTED" or "BEATEN", damageBase = 4, damagePerLevel = 3},
+	}
+	hitVictim(fake, victim)
+end
+
+local THINK = {skinwalker = thinkSkinwalker, flesh = thinkFlesh, listener = thinkListener}
+
 local function startBrain(model, id)
 	local brain = {
 		model = model,
@@ -1380,7 +1845,7 @@ local function startBrain(model, id)
 					end
 				end)
 			end
-			local ok, alive = pcall(brain.data.kind == "skinwalker" and thinkSkinwalker or think, brain)
+			local ok, alive = pcall(THINK[brain.data.kind] or think, brain)
 			if not ok then
 				warn("[Monsters] " .. tostring(alive))
 			elseif not alive then
@@ -1410,14 +1875,43 @@ strikeRemote.OnServerEvent:Connect(function(player)
 	local right = character:GetAttribute("Injury_RightArm") or 0
 	if left >= 2 and right >= 2 then return end
 	local root = character.HumanoidRootPart
-	for _, brain in pairs(monsters) do
-		local offset = brain.root.Position - root.Position
-		if offset.Magnitude < 7 and flat(root.CFrame.LookVector):Dot(flat(offset).Unit) > 0.2 then
-			onStruck(brain, character)
+	lastNoise[character] = now
+	local infected = isInfected(character)
+	local function inFront(position, reach)
+		local offset = position - root.Position
+		return offset.Magnitude < reach and flat(offset).Magnitude > 0.1 and flat(root.CFrame.LookVector):Dot(flat(offset).Unit) > 0.2
+	end
+	if not infected then
+		for _, brain in pairs(monsters) do
+			if inFront(brain.root.Position, 7) then onStruck(brain, character) end
 		end
 	end
+	-- one victim per swing: the closest person in front
+	local best, bestDist = nil, math.huge
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local other = plr.Character
+		if other ~= character and aliveCharacter(other) and isInfected(other) ~= infected then
+			local d = (other.HumanoidRootPart.Position - root.Position).Magnitude
+			if d < bestDist and inFront(other.HumanoidRootPart.Position, 6) then best, bestDist = other, d end
+		end
+	end
+	if infected then
+		local npcFolder = workspace:FindFirstChild("NPCs")
+		for _, npc in ipairs(npcFolder and npcFolder:GetChildren() or {}) do
+			if npc:IsA("Model") and aliveCharacter(npc) then
+				local d = (npc.HumanoidRootPart.Position - root.Position).Magnitude
+				if d < bestDist and inFront(npc.HumanoidRootPart.Position, 6) then best, bestDist = npc, d end
+			end
+		end
+	end
+	if best then task.delay(0.2, function()
+		if aliveCharacter(best) and aliveCharacter(character) then strikeCharacter(character, best) end
+	end) end
 end)
-Players.PlayerRemoving:Connect(function(player) lastStrike[player] = nil end)
+Players.PlayerRemoving:Connect(function(player)
+	lastStrike[player] = nil
+	if player.Character then lastNoise[player.Character] = nil end
+end)
 
 control.OnInvoke = function(action, ...)
 	if action == "Spawn" then

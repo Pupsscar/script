@@ -1,3 +1,4 @@
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local RagdollController = require(script.Parent:WaitForChild("RagdollController"))
@@ -516,11 +517,20 @@ function FallDamageController.Setup(character)
 		local ragdolledNow = character:GetAttribute("Ragdolled") == true
 		for _, object in ipairs(entry.objects) do
 			if object:IsA("Constraint") then object.Enabled = not ragdolledNow end
-			-- a dangling limb must never touch the floor while standing: the humanoid
-			-- keeps pushing the body up off it and the player "flies" until they jump
+			-- no collision right after the break (the limb spawns inside the floor and would launch
+			-- the body); the collider comes back a second later once the limb has settled
 			if object:IsA("BasePart") then object.CanCollide = false end
 		end
 		if not ragdolledNow then limb.CanCollide = false end
+		entry.collideToken = (entry.collideToken or 0) + 1
+		local collideToken = entry.collideToken
+		task.delay(1, function()
+			if loose[partKey] ~= entry or entry.collideToken ~= collideToken then return end
+			if character:GetAttribute("Ragdolled") or humanoid.Health <= 0 then return end
+			for _, object in ipairs(entry.objects) do
+				if object:IsA("BasePart") and object.Parent then object.CanCollide = true end
+			end
+		end)
 		limb.Massless = true
 		limb.CustomPhysicalProperties = PhysicalProperties.new(0.4, 0.15, 0, 1, 1)
 	end
@@ -933,6 +943,14 @@ function FallDamageController.MakeCorpse(character)
 		corpse:SetAttribute(attribute, nil)
 	end
 	corpse:SetAttribute("Corpse", true)
+	local owner = Players:GetPlayerFromCharacter(character)
+	if owner then corpse:SetAttribute("CorpseUserId", owner.UserId) end
+	local lost = {}
+	for _, key in ipairs({"Head", "Torso", "RightArm", "LeftArm", "RightLeg", "LeftLeg"}) do
+		if (character:GetAttribute("Injury_" .. key) or 0) >= 3 then table.insert(lost, key) end
+	end
+	corpse:SetAttribute("LostParts", table.concat(lost, ","))
+	corpse:SetAttribute("DeathCause", character:GetAttribute("DeathCause"))
 	local humanoid = corpse:FindFirstChildOfClass("Humanoid")
 	if humanoid then
 		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None

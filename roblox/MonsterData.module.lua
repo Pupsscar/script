@@ -44,8 +44,36 @@ MonsterData.Objects = {
 		deathCause = "SKINWALKER",
 		damageBase = 5, damagePerLevel = 3, swingCooldown = 1.05,
 	},
+	["A-013"] = {
+		id = "A-013",
+		name = "OBJECT A-013",
+		nickname = "The Flesh",
+		class = "A",
+		description = "A walking heap of meat with no face. Slow, but it never stops following. "
+			.. "Whoever it kills does not stay dead: it eats the body and the victim wakes up inside it, infected. "
+			.. "Every part it ate grows back as raw flesh. The infected serve it and hunt the survivors.",
+		traits = {"infects its victims", "eats corpses", "never retreats", "commands the infected"},
+		kind = "flesh",
+		speedMultiplier = 0.95,
+		attackRange = 5.4,
+		deathCause = "FLESH",
+		damageBase = 6, damagePerLevel = 4, swingCooldown = 1.3,
+	},
+	["C-207"] = {
+		id = "C-207",
+		name = "OBJECT C-207",
+		nickname = "The Listener",
+		class = "C",
+		description = "Blind. Hunts only by sound: running, jumping, fighting, falling. "
+			.. "Walk slowly or crouch and it cannot find you. Freeze and it loses you, even at arm's length.",
+		traits = {"blind", "hunts by sound", "fast when it hears you", "loses you if you freeze"},
+		kind = "listener",
+		speedMultiplier = 1.25,
+		deathCause = "LISTENER",
+		damageBase = 5, damagePerLevel = 3, swingCooldown = 1,
+	},
 }
-MonsterData.Order = {"D-130", "B-414"}
+MonsterData.Order = {"D-130", "B-414", "A-013", "C-207"}
 
 function MonsterData.Get(id)
 	return MonsterData.Objects[id]
