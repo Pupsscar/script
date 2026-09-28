@@ -21,6 +21,7 @@ local CONFIG = {
 	-- Roblox blocks HttpService calls to roblox.com, so badges go through a public proxy.
 	-- Needs "Allow HTTP Requests" on. If the request fails the badge check is skipped, never a kick.
 	BadgeApi = "https://badges.roproxy.com/v1/users/%d/badges?limit=25&sortOrder=Desc",
+	UserSearchApi = "https://users.roproxy.com/v1/users/search?keyword=%s&limit=10",
 	ScreenWhitelist = {},
 	SuspiciousMessage = "Suspicious account",
 
@@ -278,7 +279,38 @@ local function recordFrame()
 	while frames[1] and frames[1].t < cutoff do table.remove(frames, 1) end
 end
 
+local rememberPlayer
 local incidentCache = {}
+
+-- ===================== seen players (for name suggestions) =====================
+local seenStore
+pcall(function() seenStore = DataStoreService:GetDataStore("AC_Seen_v1") end)
+local seenCache, seenCacheAt = nil, -math.huge
+
+function rememberPlayer(player)
+	if not seenStore then return end
+	local entry = {userId = player.UserId, name = player.Name, displayName = player.DisplayName, last = os.time()}
+	pcall(function()
+		seenStore:UpdateAsync("index", function(list)
+			list = list or {}
+			for i = #list, 1, -1 do
+				if list[i].userId == entry.userId then table.remove(list, i) end
+			end
+			table.insert(list, 1, entry)
+			while #list > 1500 do table.remove(list) end
+			return list
+		end)
+	end)
+	seenCacheAt = -math.huge
+end
+
+local function seenPlayers()
+	if seenCache and os.clock() - seenCacheAt < 60 then return seenCache end
+	local list
+	if seenStore then pcall(function() list = seenStore:GetAsync("index") end) end
+	seenCache, seenCacheAt = list or seenCache or {}, os.clock()
+	return seenCache
+end
 local incidentIndexCache = {}
 
 local function buildReplay(suspectId, fromT, toT)
@@ -364,7 +396,7 @@ local function flag(player, kind, detail)
 	if now - (st.flagLast[kind] or -math.huge) < 0.45 then return end
 	st.flagLast[kind] = now
 	st.flagCounts[kind] = (st.flagCounts[kind] or 0) + 1
-	st.score += CONFIG.Points[kind] or 3
+	st.score += (CONFIG.Points[kind] or 3) * (st.trusted and 0.5 or 1)
 	local text = kind .. (detail and (": " .. detail) or "")
 	logEvent(player.Character, "flag", text)
 	st.lastReason = text
@@ -404,10 +436,12 @@ function punish(player, reason)
 	local st = states[player]
 	if not st or st.punishing then return end
 	st.punishing = true
+	local token = {}
+	st.punishToken = token
 	player:SetAttribute("AC_Punished", true)
 	local meta = createIncident(player, reason, "punished")
 	local function doBan()
-		if st.banned then return end
+		if st.banned or st.punishToken ~= token then return end
 		st.banned = true
 		ban(player.UserId, player.Name, "Exploiting (" .. reason .. ")", CONFIG.AutoBanSeconds, CONFIG.AutoBanAllDevices,
 			"AntiCheat", "anticheat", meta.id)
@@ -428,6 +462,7 @@ function punish(player, reason)
 		doBan()
 	end)
 	task.delay(CONFIG.PunishKillDelay, function()
+		if st.punishToken ~= token then return end
 		if humanoid.Parent and humanoid.Health > 0 then
 			if not FallDamageController.ExplodeHead(character) then humanoid.Health = 0 end
 		end
@@ -624,6 +659,7 @@ local function onPlayerAdded(player)
 		return
 	end
 	states[player] = newState(player)
+	task.spawn(rememberPlayer, player)
 	task.spawn(screenAccount, player)
 	player.CharacterAdded:Connect(function(character) watchCharacter(player, character) end)
 	if player.Character then task.spawn(watchCharacter, player, player.Character) end
@@ -882,6 +918,119 @@ function ADMIN.Punish(admin, userId)
 	if isAdmin(plr) then return false, "can't punish an admin" end
 	punish(plr, "manual by " .. admin.Name)
 	return true, plr.Name .. " is being punished"
+end
+
+-- name suggestions while typing: online players, everyone seen before, ban records, then Roblox itself
+function ADMIN.SearchUsers(admin, query)
+	if typeof(query) ~= "string" then return false, "bad query" end
+	query = query:gsub("^%s+", ""):gsub("%s+$", "")
+	if query == "" then return true, {} end
+	local lower = query:lower()
+	local results, seen = {}, {}
+	local function consider(userId, name, displayName, source)
+		if not userId or seen[userId] then return end
+		local n, d = tostring(name or ""):lower(), tostring(displayName or ""):lower()
+		local score
+		if n == lower or tostring(userId) == query then score = 5
+		elseif n:sub(1, #lower) == lower then score = 4
+		elseif d:sub(1, #lower) == lower then score = 3
+		elseif n:find(lower, 1, true) or d:find(lower, 1, true) then score = 2
+		elseif tostring(userId):sub(1, #query) == query then score = 1 end
+		if not score then return end
+		if source == "online" then score += 0.5 end
+		seen[userId] = true
+		table.insert(results, {userId = userId, name = name, displayName = displayName, source = source, score = score})
+	end
+	for _, plr in ipairs(Players:GetPlayers()) do consider(plr.UserId, plr.Name, plr.DisplayName, "online") end
+	for _, entry in ipairs(seenPlayers()) do consider(entry.userId, entry.name, entry.displayName, "seen") end
+	for _, entry in ipairs(readBanIndex()) do consider(entry.userId, entry.name, entry.name, "banned") end
+	if #results < 8 and #query >= 3 then
+		pcall(function()
+			local url = string.format(CONFIG.UserSearchApi, HttpService:UrlEncode(query))
+			local data = HttpService:JSONDecode(HttpService:GetAsync(url))
+			for _, user in ipairs(data.data or {}) do consider(user.id, user.name, user.displayName, "roblox") end
+		end)
+		if not seen[query] then
+			local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(query) end)
+			if ok and id then consider(id, query, query, "roblox") end
+		end
+	end
+	table.sort(results, function(a, b) return a.score > b.score end)
+	while #results > 8 do table.remove(results) end
+	return true, results
+end
+
+local function updateIncidentMeta(id, fields)
+	local function apply(meta)
+		if meta and meta.id == id then
+			for k, v in pairs(fields) do meta[k] = v end
+		end
+	end
+	local cached = incidentCache[id]
+	if cached then apply(cached.meta) end
+	for _, meta in ipairs(incidentIndexCache) do apply(meta) end
+	if not incidentStore then return end
+	pcall(function()
+		incidentStore:UpdateAsync("i_" .. id, function(data)
+			if data then apply(data.meta) end
+			return data
+		end)
+	end)
+	pcall(function()
+		incidentStore:UpdateAsync("index", function(list)
+			for _, meta in ipairs(list or {}) do apply(meta) end
+			return list
+		end)
+	end)
+end
+
+local function findIncidentMeta(id)
+	local cached = incidentCache[id]
+	if cached then return cached.meta end
+	for _, meta in ipairs(readIncidentIndex()) do
+		if meta.id == id then return meta end
+	end
+	return nil
+end
+
+-- the admin watched the replay and decided
+function ADMIN.Verdict(admin, id, verdict)
+	if typeof(id) ~= "string" then return false, "bad id" end
+	local meta = findIncidentMeta(id)
+	if not meta then return false, "incident not found" end
+	if verdict == "cheat" then
+		ban(meta.userId, meta.name, "Cheating (confirmed on replay)", -1, true, admin.Name, "admin", id)
+		updateIncidentMeta(id, {verdict = "cheat", verdictBy = admin.Name})
+		return true, meta.name .. ": permanent ban on all devices"
+	elseif verdict == "legit" then
+		local plr = Players:GetPlayerByUserId(meta.userId)
+		local st = plr and states[plr]
+		if st then
+			-- stop a punishment that is still running and undo it
+			st.punishToken = nil
+			st.punishing = false
+			st.banned = false
+			st.doBan = nil
+			st.score = 0
+			st.flagCounts = {}
+			st.trusted = true
+			plr:SetAttribute("AC_Punished", nil)
+			local character = plr.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				character:SetAttribute("Lobotomized", false)
+				character:SetAttribute("Injury_Torso", 0)
+				humanoid.WalkSpeed = 16
+				humanoid.JumpPower = 50
+			end
+		end
+		local entry
+		if banStore then pcall(function() entry = banStore:GetAsync("u_" .. meta.userId) end) end
+		if banActive(entry) and entry.source == "anticheat" then unban(meta.userId, admin.Name) end
+		updateIncidentMeta(id, {verdict = "legit", verdictBy = admin.Name})
+		return true, meta.name .. " cleared as legit" .. (st and " and released" or "")
+	end
+	return false, "bad verdict"
 end
 
 local lastAdminCall = {}

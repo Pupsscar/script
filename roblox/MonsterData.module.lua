@@ -49,10 +49,11 @@ MonsterData.Objects = {
 		name = "OBJECT A-013",
 		nickname = "The Flesh",
 		class = "A",
-		description = "A walking heap of meat with no face. Slow, but it never stops following. "
-			.. "Whoever it kills does not stay dead: it eats the body and the victim wakes up inside it, infected. "
-			.. "Every part it ate grows back as raw flesh. The infected serve it and hunt the survivors.",
-		traits = {"infects its victims", "eats corpses", "never retreats", "commands the infected"},
+		description = "A walking heap of raw meat, veins crawling over it, white eyes staring out of black pits. "
+			.. "Its tentacles lash out, catch you and drag you in. Whoever it kills does not stay dead: "
+			.. "it eats the body and the victim wakes up infected. Eaten parts grow back as flesh, wounds close by themselves. "
+			.. "The infected serve it and hunt the survivors.",
+		traits = {"tentacles grab and drag", "infects its victims", "eats corpses", "hears everything", "commands the infected"},
 		kind = "flesh",
 		speedMultiplier = 0.95,
 		attackRange = 5.4,
@@ -64,10 +65,12 @@ MonsterData.Objects = {
 		name = "OBJECT C-207",
 		nickname = "The Listener",
 		class = "C",
-		description = "Blind. Hunts only by sound: running, jumping, fighting, falling. "
-			.. "Walk slowly or crouch and it cannot find you. Freeze and it loses you, even at arm's length.",
-		traits = {"blind", "hunts by sound", "fast when it hears you", "loses you if you freeze"},
+		description = "No eyes, only a mouth. Hunts by sound and hears everything: every step, every jump, "
+			.. "lying down, crawling, chat and voice, and up close even your heartbeat. "
+			.. "Crawl, hold your breath, keep your distance.",
+		traits = {"blind", "hears every step", "hears chat and voice", "hears your heartbeat up close"},
 		kind = "listener",
+		hearing = 1.6,
 		speedMultiplier = 1.25,
 		deathCause = "LISTENER",
 		damageBase = 5, damagePerLevel = 3, swingCooldown = 1,

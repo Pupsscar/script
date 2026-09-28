@@ -624,6 +624,53 @@ button("USE SELECTED PLAYER", FORM_X, 104, 260, 26, bansPage, function()
 	if not selectedPlayer or isNpc(selectedPlayer) then setStatus(false, "select a player on the PLAYERS tab") return end
 	targetBox.Text = tostring(selectedPlayer.UserId)
 end)
+local suggestBox = create("Frame", {
+	Position = UDim2.fromOffset(FORM_X, 101), Size = UDim2.fromOffset(260, 0), BackgroundColor3 = Color3.fromRGB(12, 12, 12),
+	BorderSizePixel = 0, Visible = false, ZIndex = 20, AutomaticSize = Enum.AutomaticSize.Y, Parent = bansPage,
+}, {
+	create("UIStroke", {Color = MID, Thickness = 1}),
+	create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder}),
+})
+local searchToken = 0
+local function showSuggestions(results)
+	for _, child in ipairs(suggestBox:GetChildren()) do
+		if child:IsA("GuiButton") then child:Destroy() end
+	end
+	suggestBox.Visible = #results > 0
+	for i, user in ipairs(results) do
+		local row = create("TextButton", {
+			Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = Color3.fromRGB(12, 12, 12), BorderSizePixel = 0,
+			AutoButtonColor = true, Font = CONFIG.Font, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = INK, ZIndex = 21, LayoutOrder = i, TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = string.format("  %s  @%s  ·  %s", tostring(user.displayName or user.name), tostring(user.name), tostring(user.source)),
+			Parent = suggestBox,
+		})
+		row.Activated:Connect(function()
+			targetBox.Text = tostring(user.userId)
+			suggestBox.Visible = false
+			searchToken += 1
+			setStatus(true, string.format("target: %s (@%s) · %d", tostring(user.displayName or user.name), tostring(user.name), user.userId))
+		end)
+	end
+end
+targetBox:GetPropertyChangedSignal("Text"):Connect(function()
+	searchToken += 1
+	local my = searchToken
+	local query = targetBox.Text
+	if not targetBox:IsFocused() or query:gsub("%s", "") == "" or query:match("^%d+$") and #query > 6 then
+		suggestBox.Visible = false
+		return
+	end
+	task.delay(0.35, function()
+		if my ~= searchToken then return end
+		local ok, results = call("SearchUsers", query)
+		if my ~= searchToken or not ok then return end
+		showSuggestions(results)
+	end)
+end)
+targetBox.FocusLost:Connect(function()
+	task.delay(0.25, function() suggestBox.Visible = false end)
+end)
 local reasonBox = textBox("reason", FORM_X, 138, 260, bansPage)
 local durationBox = textBox("duration: 30m / 12h / 7d / 2w / perm", FORM_X, 172, 260, bansPage)
 local allDevices = true
@@ -674,7 +721,8 @@ local function refreshIncidents()
 	detailText.Text = "select an incident"
 	for i, meta in ipairs(list) do
 		listRow(incidentList, i, string.format("%s — %s", tostring(meta.name), tostring(meta.reason)),
-			string.format("%s · %s · score %s · %s", when(meta.at), tostring(meta.action), tostring(meta.score), tostring(meta.flags)),
+			string.format("%s%s · %s · score %s · %s", meta.verdict and ("[" .. string.upper(meta.verdict) .. "] ") or "",
+				when(meta.at), tostring(meta.action), tostring(meta.score), tostring(meta.flags)),
 			function()
 				selectedIncident = meta
 				detailText.Text = string.format("%s\n\nuser id: %d\nwhen: %s\naction: %s\nscore: %s\n\nreason: %s\n\nflags: %s\n\nserver: %s",
@@ -900,6 +948,17 @@ end)
 button("RESTART", 642, 52, 106, 26, bar, function()
 	if replay then replay.t = 0 end
 end)
+local function verdict(kind)
+	if not replay or not replay.meta then return end
+	local ok, message = call("Verdict", replay.meta.id, kind)
+	setStatus(ok, message)
+	replayTitle.Text = (ok and (kind == "cheat" and "BANNED  ·  " or "CLEARED  ·  ") or "") .. replayTitle.Text
+end
+local cheatButton = button("CHEATS: PERM BAN", 500, 116, 120, 26, bar, function() verdict("cheat") end)
+cheatButton.TextColor3 = Color3.fromRGB(235, 70, 70)
+cheatButton.TextSize = 12
+local legitButton = button("LEGIT: RELEASE", 628, 116, 120, 26, bar, function() verdict("legit") end)
+legitButton.TextSize = 12
 button("NEXT VIEW", 500, 84, 120, 26, bar, function()
 	if not replay then return end
 	followGhost(replay.follow % #replay.ghosts + 1)
@@ -948,3 +1007,27 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	eventLog.Text = table.concat(lines, "\n", math.max(1, #lines - 4), #lines)
 end)
+
+-- ===================== small screens and touch =====================
+local panelScale = create("UIScale", {Parent = panel})
+local barScale = create("UIScale", {Parent = bar})
+local function rescale()
+	local camera = workspace.CurrentCamera
+	if not camera then return end
+	local size = camera.ViewportSize
+	panelScale.Scale = math.clamp(math.min((size.X - 16) / 700, (size.Y - 16) / 470), 0.4, 1)
+	barScale.Scale = math.clamp((size.X - 16) / 760, 0.4, 1)
+end
+rescale()
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(rescale)
+if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale) end
+
+if UserInputService.TouchEnabled then
+	local ContextActionService = game:GetService("ContextActionService")
+	ContextActionService:BindAction("GS_AdminPanel", function(_, state)
+		if state == Enum.UserInputState.Begin then setOpen(not open) end
+		return Enum.ContextActionResult.Sink
+	end, true)
+	ContextActionService:SetTitle("GS_AdminPanel", "ADMIN")
+	ContextActionService:SetPosition("GS_AdminPanel", UDim2.new(1, -165, 0, 10))
+end

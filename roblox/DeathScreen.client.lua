@@ -114,6 +114,18 @@ local card = create("CanvasGroup", {
 	BackgroundTransparency = 1, GroupTransparency = 1, ZIndex = 5, Parent = black,
 })
 
+-- shrink the record card on phones
+do
+	local scale = Instance.new("UIScale")
+	scale.Parent = card
+	local function rescale()
+		local camera = workspace.CurrentCamera
+		if camera then scale.Scale = math.clamp(math.min((camera.ViewportSize.X - 16) / 620, (camera.ViewportSize.Y - 16) / 520), 0.45, 1) end
+	end
+	rescale()
+	if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(rescale) end
+end
+
 local header = create("TextLabel", {
 	Position = UDim2.fromOffset(0, 0), Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1,
 	Font = CONFIG.Font, Text = "— RECORD OF DEATH —", TextSize = 14, TextColor3 = CONFIG.Dim, ZIndex = 6, Parent = card,

@@ -24,6 +24,13 @@ local TRAIL_LIFETIME = BLOOD_SPLAT_LIFETIME + TRAIL_EXTRA_LIFETIME
 local TRAIL_STEP = 1.6
 local TRAIL_MAX = 4000
 local CLOSE_AGGRO = 7
+-- Upload the PNGs from roblox/textures (Asset Manager → Bulk Import or Create → Decal) and paste their ids here.
+-- Leave empty and the monsters still get 3D veins and coloured flesh, just without the painted texture.
+local TEXTURES = {
+	Meat = "",          -- flesh_meat.png
+	Veins = "",         -- veins_overlay.png
+	ListenerSkin = "",  -- listener_skin.png
+}
 local SKIN_BARE = Color3.fromRGB(192, 190, 186)
 local PATH_SETTINGS = {
 	AgentRadius = 1.8, AgentHeight = 5.2, AgentCanJump = true, AgentCanClimb = true,
@@ -315,51 +322,188 @@ local function coloredModel(color)
 	return model
 end
 
--- A-013: a walking heap of meat. Lumps everywhere, no face at all.
+local function assetId(id)
+	if id == nil or id == "" then return nil end
+	if tostring(id):match("^%d+$") then return "rbxassetid://" .. id end
+	return id
+end
+
+-- tile a texture over every face of a body part
+local function paintPart(part, id, studs, transparency)
+	local texture = assetId(id)
+	if not texture then return end
+	for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+		local t = Instance.new("Texture")
+		t.Name = "GS_Tex"
+		t.Texture = texture
+		t.Face = face
+		t.StudsPerTileU = studs
+		t.StudsPerTileV = studs
+		t.OffsetStudsU = rng:NextNumber(0, studs)
+		t.OffsetStudsV = rng:NextNumber(0, studs)
+		t.Transparency = transparency or 0
+		t.Parent = part
+	end
+end
+
+-- raised 3D veins crawling over the faces of a part
+local FACES = {
+	{n = Vector3.new(0, 0, -1), u = Vector3.new(1, 0, 0), v = Vector3.new(0, 1, 0)},
+	{n = Vector3.new(0, 0, 1), u = Vector3.new(1, 0, 0), v = Vector3.new(0, 1, 0)},
+	{n = Vector3.new(1, 0, 0), u = Vector3.new(0, 0, 1), v = Vector3.new(0, 1, 0)},
+	{n = Vector3.new(-1, 0, 0), u = Vector3.new(0, 0, 1), v = Vector3.new(0, 1, 0)},
+}
+local function addVeins(holder, part, count, color, thickness)
+	local half = part.Size / 2
+	for _ = 1, count do
+		local face = FACES[rng:NextInteger(1, #FACES)]
+		local hu = math.abs(face.u:Dot(half)) - 0.08
+		local hv = math.abs(face.v:Dot(half)) - 0.08
+		local hn = math.abs(face.n:Dot(half)) + 0.015
+		local a, b = rng:NextNumber(-hu, hu), rng:NextNumber(-hv, hv)
+		local angle = rng:NextNumber(0, math.pi * 2)
+		local width = thickness * rng:NextNumber(0.8, 1.25)
+		for _ = 1, rng:NextInteger(6, 10) do
+			local step = rng:NextNumber(0.22, 0.38)
+			local na = math.clamp(a + math.cos(angle) * step, -hu, hu)
+			local nb = math.clamp(b + math.sin(angle) * step, -hv, hv)
+			local p0 = face.n * hn + face.u * a + face.v * b
+			local p1 = face.n * hn + face.u * na + face.v * nb
+			local length = (p1 - p0).Magnitude
+			if length > 0.05 then
+				local seg = Instance.new("Part")
+				seg.Name = "GS_Vein"
+				seg.Shape = Enum.PartType.Cylinder
+				seg.Size = Vector3.new(length + width, width, width)
+				seg.Color = color
+				seg.Material = Enum.Material.SmoothPlastic
+				seg.Reflectance = 0.08
+				seg.CanCollide, seg.CanQuery, seg.CanTouch, seg.CastShadow, seg.Massless = false, false, false, false, true
+				local mid = (p0 + p1) / 2
+				seg.CFrame = part.CFrame * CFrame.lookAt(mid, p1) * CFrame.Angles(0, math.pi / 2, 0)
+				local weld = Instance.new("WeldConstraint")
+				weld.Part0 = part
+				weld.Part1 = seg
+				weld.Parent = seg
+				seg.Parent = holder
+			end
+			a, b = na, nb
+			angle += rng:NextNumber(-0.7, 0.7)
+			width = math.max(0.035, width * 0.9)
+		end
+	end
+end
+
+-- white pinprick eyes glowing out of black pits
+local function addEye(holder, part, localCF, size)
+	weldBlob(holder, part, localCF * CFrame.new(0, 0, 0.04), Vector3.new(size * 1.35, size * 1.1, size * 0.8), Color3.fromRGB(4, 2, 2), 0)
+	local eye = weldBlob(holder, part, localCF * CFrame.new(0, 0, -size * 0.12), Vector3.new(size * 0.55, size * 0.55, size * 0.4),
+		Color3.fromRGB(245, 245, 240), 0)
+	eye.Material = Enum.Material.Neon
+	return eye
+end
+
+-- A-013: a walking heap of raw meat. Veins everywhere, white eyes in black pits, tentacles (drawn by clients).
 local function buildFleshModel()
 	local model = coloredModel(FLESH_COLORS[1])
 	if not model then return nil end
+	local holder = Instance.new("Folder")
+	holder.Name = "GS_Body"
+	holder.Parent = model
 	for _, part in ipairs(model:GetChildren()) do
 		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-			part.Color = FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)]
-			part.Reflectance = 0.12
-			local count = part.Name == "Torso" and 9 or (part.Name == "Head" and 6 or 4)
+			part.Color = FLESH_COLORS[rng:NextInteger(1, 3)]
+			part.Material = Enum.Material.SmoothPlastic
+			part.Reflectance = 0.14
+			paintPart(part, TEXTURES.Meat, 2.5)
+			paintPart(part, TEXTURES.Veins, 3, 0.1)
+			addVeins(holder, part, part.Name == "Torso" and 5 or 3, Color3.fromRGB(58, 6, 32), 0.1)
+			local count = part.Name == "Torso" and 8 or (part.Name == "Head" and 4 or 3)
 			for _ = 1, count do
 				local half = part.Size / 2
 				local offset = Vector3.new(rng:NextNumber(-half.X, half.X), rng:NextNumber(-half.Y, half.Y), rng:NextNumber(-half.Z, half.Z))
-				local r = rng:NextNumber(0.45, part.Name == "Torso" and 1.3 or 0.85)
-				weldBlob(part, part, CFrame.new(offset), Vector3.new(r, r * rng:NextNumber(0.7, 1.2), r),
-					FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)], rng:NextNumber(0.05, 0.25))
+				local r = rng:NextNumber(0.45, part.Name == "Torso" and 1.2 or 0.8)
+				weldBlob(holder, part, CFrame.new(offset), Vector3.new(r, r * rng:NextNumber(0.7, 1.2), r),
+					FLESH_COLORS[rng:NextInteger(1, #FLESH_COLORS)], rng:NextNumber(0.1, 0.3))
 			end
 		end
 	end
 	local head = model:FindFirstChild("Head")
 	if head then
-		-- a single wet vertical mouth where a face should be
-		weldBlob(head, head, CFrame.new(0, -0.05, -0.55), Vector3.new(0.22, 0.75, 0.3), Color3.fromRGB(20, 2, 4), 0.3)
+		for _, d in ipairs(head:GetChildren()) do
+			if d:IsA("Decal") then d:Destroy() end
+		end
+		addEye(holder, head, CFrame.new(-0.22, 0.14, -0.56), 0.26)
+		addEye(holder, head, CFrame.new(0.24, 0.1, -0.56), 0.3)
+		addEye(holder, head, CFrame.new(0.05, 0.36, -0.5), 0.16)
+		-- a torn vertical maw full of teeth
+		weldBlob(holder, head, CFrame.new(0, -0.2, -0.55), Vector3.new(0.34, 0.6, 0.3), Color3.fromRGB(16, 0, 2), 0.35)
+		for i = 1, 7 do
+			local y = -0.46 + i * 0.07
+			for _, side in ipairs({-1, 1}) do
+				local tooth = weldBlob(holder, head, CFrame.new(side * 0.12, y, -0.66) * CFrame.Angles(0, 0, side * math.rad(80)),
+					Vector3.new(0.05, 0.13, 0.05), Color3.fromRGB(226, 214, 186), 0.05)
+				tooth.Material = Enum.Material.SmoothPlastic
+			end
+		end
 	end
+	-- extra eyes where eyes should not be
+	local torso = model:FindFirstChild("Torso")
+	if torso then
+		for _ = 1, 4 do
+			local x, y = rng:NextNumber(-0.8, 0.8), rng:NextNumber(-0.7, 0.8)
+			addEye(holder, torso, CFrame.new(x, y, -0.52), rng:NextNumber(0.14, 0.24))
+		end
+	end
+	for _, name in ipairs({"Left Arm", "Right Arm"}) do
+		local arm = model:FindFirstChild(name)
+		if arm then addEye(holder, arm, CFrame.new(0, rng:NextNumber(-0.5, 0.6), -0.53), 0.15) end
+	end
+	local grab = Instance.new("ObjectValue")
+	grab.Name = "GS_GrabTarget"
+	grab.Parent = model
 	return model
 end
 
--- C-207: blind, long ears, a slit instead of a face
+-- C-207: blind. Smooth skin where the eyes should be, a mouth that splits the head, veins everywhere.
 local function buildListenerModel()
-	local skin = Color3.fromRGB(58, 60, 66)
+	local skin = Color3.fromRGB(150, 152, 158)
 	local model = coloredModel(skin)
 	if not model then return nil end
+	local holder = Instance.new("Folder")
+	holder.Name = "GS_Body"
+	holder.Parent = model
 	for _, part in ipairs(model:GetChildren()) do
 		if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
 			part.Material = Enum.Material.SmoothPlastic
+			part.Color = skin
+			paintPart(part, TEXTURES.ListenerSkin, 3)
+			addVeins(holder, part, part.Name == "Torso" and 6 or 4, Color3.fromRGB(62, 42, 96), 0.08)
 		end
 	end
 	local head = model:FindFirstChild("Head")
 	if head then
-		local dark = Color3.fromRGB(34, 35, 40)
+		local dark = Color3.fromRGB(96, 92, 104)
+		-- sealed-over eyes: sunken skin, stitched shut
 		for _, side in ipairs({-1, 1}) do
-			weldBlob(head, head, CFrame.new(side * 0.72, 0.35, 0.05) * CFrame.Angles(0, 0, side * math.rad(-28)),
-				Vector3.new(0.14, 1.3, 0.7), dark, 0.05)
-			weldBlob(head, head, CFrame.new(side * 0.2, 0.12, -0.52), Vector3.new(0.18, 0.1, 0.1), dark, 0)
+			weldBlob(holder, head, CFrame.new(side * 0.22, 0.16, -0.55), Vector3.new(0.3, 0.16, 0.12), dark, 0)
+			for i = -1, 1 do
+				local stitch = weldBlob(holder, head, CFrame.new(side * 0.22 + i * 0.08, 0.16, -0.61) * CFrame.Angles(0, 0, math.rad(90)),
+					Vector3.new(0.02, 0.14, 0.02), Color3.fromRGB(20, 14, 14), 0)
+				stitch.Material = Enum.Material.SmoothPlastic
+			end
 		end
-		weldBlob(head, head, CFrame.new(0, -0.18, -0.55), Vector3.new(0.12, 0.55, 0.14), Color3.fromRGB(8, 6, 6), 0)
+		-- huge mouth, cheek to cheek, rows of needle teeth
+		weldBlob(holder, head, CFrame.new(0, -0.2, -0.5), Vector3.new(0.95, 0.42, 0.34), Color3.fromRGB(10, 2, 4), 0.2)
+		weldBlob(holder, head, CFrame.new(0, -0.2, -0.47), Vector3.new(1.02, 0.5, 0.3), Color3.fromRGB(88, 18, 30), 0.25)
+		for i = -5, 5 do
+			local x = i * 0.075
+			local curve = 0.05 * (x * x) / 0.15
+			for _, row in ipairs({{0.11, 1}, {-0.13, -1}}) do
+				weldBlob(holder, head, CFrame.new(x, -0.2 + row[1] - row[2] * curve, -0.64 + math.abs(x) * 0.25),
+					Vector3.new(0.035, rng:NextNumber(0.1, 0.17), 0.035), Color3.fromRGB(232, 226, 205), 0.1)
+			end
+		end
 	end
 	return model
 end
@@ -918,6 +1062,120 @@ local function nearestVisible(brain, radius)
 	return best
 end
 
+-- ===== Hearing: every monster hears what players do =====
+-- Each character has a noise radius right now: how far away a monster can hear it.
+-- Steps, jumps, landings, lying down, crawling, talking in chat or voice, fighting, pain,
+-- and at point blank even a heartbeat.
+local noiseRemote = ensure(ReplicatedStorage, "RemoteEvent", "GS_Noise")
+local noiseEvents = {}
+
+local function makeNoise(character, radius, duration)
+	if not character then return end
+	local now = os.clock()
+	local current = noiseEvents[character]
+	if current and current.untilT > now and current.radius >= radius then return end
+	noiseEvents[character] = {radius = radius, untilT = now + (duration or 1)}
+end
+
+local function noiseRadius(character)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not root or not humanoid or humanoid.Health <= 0 then return 0 end
+	local vel = root.AssemblyLinearVelocity
+	local speed = flat(vel).Magnitude
+	-- a heartbeat, louder when hurt: only audible right next to you
+	local radius = humanoid.Health < humanoid.MaxHealth * 0.5 and 6.5 or 4.5
+	if (character:GetAttribute("Bleeding") or 0) > 0.05 then radius = math.max(radius, 9) end -- ragged breathing
+	if speed > 0.8 then
+		if character:GetAttribute("GS_Prone") then
+			radius = math.max(radius, 9 + speed * 0.6)       -- dragging yourself along the floor
+		elseif character:GetAttribute("GS_Crouch") then
+			radius = math.max(radius, 11 + speed * 0.8)
+		else
+			radius = math.max(radius, 18 + speed * 1.7)      -- every footstep
+		end
+	end
+	if vel.Y > 8 then radius = math.max(radius, 40) end
+	if character:GetAttribute("Ragdolled") then radius = math.max(radius, 42) end
+	local event = noiseEvents[character]
+	if event and event.untilT > os.clock() then radius = math.max(radius, event.radius) end
+	return radius
+end
+
+-- the loudest thing this monster can hear right now
+local function hear(brain)
+	local mult = brain.data.hearing or 1
+	local best, bestMargin, bestPos = nil, 0, nil
+	for _, character in ipairs(livingTargets()) do
+		local d = (character.HumanoidRootPart.Position - brain.root.Position).Magnitude
+		local margin = noiseRadius(character) * mult - d
+		if margin > bestMargin then best, bestMargin, bestPos = character, margin, character.HumanoidRootPart.Position end
+	end
+	return best, bestPos
+end
+
+-- walk towards whatever it heard; returns the character it hears right now (if any)
+local function followNoise(brain, now, speed)
+	local who, pos = hear(brain)
+	if who then brain.noisePos, brain.noiseAt = pos, now end
+	if brain.noisePos then
+		if now - (brain.noiseAt or 0) > 8 then
+			brain.noisePos = nil
+		elseif goTo(brain, brain.noisePos, speed) or flat(brain.noisePos - brain.root.Position).Magnitude < 3 then
+			brain.noisePos = nil
+		end
+	end
+	return who
+end
+
+local function hookNoisePlayer(plr)
+	plr.Chatted:Connect(function()
+		makeNoise(plr.Character, 70, 2.5)
+	end)
+	plr.CharacterAdded:Connect(function(character)
+		local humanoid = character:WaitForChild("Humanoid", 10)
+		if not humanoid then return end
+		local last = humanoid.Health
+		humanoid.HealthChanged:Connect(function(health)
+			if last - health >= 4 then makeNoise(character, 65, 1.5) end -- screaming in pain
+			last = health
+		end)
+		for _, attribute in ipairs({"GS_Prone", "GS_Crouch"}) do
+			character:GetAttributeChangedSignal(attribute):Connect(function()
+				makeNoise(character, 16, 1) -- lying down / getting up
+			end)
+		end
+		character:GetAttributeChangedSignal("LastFallHeight"):Connect(function()
+			makeNoise(character, 55, 1.5) -- a body hitting the ground
+		end)
+	end)
+end
+for _, plr in ipairs(Players:GetPlayers()) do hookNoisePlayer(plr) end
+Players.PlayerAdded:Connect(hookNoisePlayer)
+
+-- voice: each client measures its own microphone (new audio API) and reports how loud it is
+local lastVoice = {}
+noiseRemote.OnServerEvent:Connect(function(plr, kind, level)
+	if kind ~= "voice" or typeof(level) ~= "number" then return end
+	local now = os.clock()
+	if now - (lastVoice[plr] or 0) < 0.2 then return end
+	lastVoice[plr] = now
+	level = math.clamp(level, 0, 1)
+	makeNoise(plr.Character, 30 + level * 60, 0.7)
+end)
+Players.PlayerRemoving:Connect(function(plr)
+	lastVoice[plr] = nil
+	if plr.Character then noiseEvents[plr.Character] = nil end
+end)
+task.spawn(function()
+	while true do
+		task.wait(10)
+		for character in pairs(noiseEvents) do
+			if not character.Parent then noiseEvents[character] = nil end
+		end
+	end
+end)
+
 local function abortEat(brain)
 	if brain.food and brain.food.Parent then brain.food:SetAttribute("GS_BeingEaten", nil) end
 	if brain.eatingPiece and brain.eatingPiece.Parent then
@@ -968,6 +1226,7 @@ local function ambientSounds(brain, now)
 end
 
 local onCorpseEaten
+local tentacleGrab
 local function eatStep(brain, now, nextState)
 	local model, root = brain.model, brain.root
 	local food = brain.food
@@ -1072,8 +1331,15 @@ local function think(brain)
 			brain.watchUntil = now + randRange(WATCH_TIME)
 			setState(brain, "watch")
 		else
-			local point = freshestTrailPoint(brain, 140)
-			if point then
+			local heard = followNoise(brain, now, WALK_SPEED + 3)
+			local point = not brain.noisePos and freshestTrailPoint(brain, 140) or nil
+			if heard and (heard.HumanoidRootPart.Position - root.Position).Magnitude < CLOSE_AGGRO then
+				setTarget(brain, heard)
+				fx(brain, "Shriek")
+				setState(brain, "attack")
+			elseif brain.noisePos then
+				if state ~= "track" then setState(brain, "track") end
+			elseif point then
 				if state ~= "track" then setState(brain, "track") end
 				brain.trailPoint = point
 				if goTo(brain, point.pos, WALK_SPEED + 2) or (point.pos - root.Position).Magnitude < 4 then
@@ -1359,8 +1625,22 @@ local function thinkSkinwalker(brain)
 				setState(brain, "mimic")
 			end
 		else
-			local point = freshestTrailPoint(brain, 140)
-			if point then
+			local heard = followNoise(brain, now, revealed and speed * 0.8 or WALK_SPEED + 2)
+			local point = not brain.noisePos and freshestTrailPoint(brain, 140) or nil
+			if heard and (heard.HumanoidRootPart.Position - root.Position).Magnitude < 8 then
+				setTarget(brain, heard)
+				if revealed then
+					setState(brain, "hunt")
+					fx(brain, "Shriek")
+				else
+					brain.mimicSince = now
+					brain.stareTime = 0
+					brain.targetWasAir = false
+					setState(brain, "mimic")
+				end
+			elseif brain.noisePos then
+				if state ~= "track" then setState(brain, "track") end
+			elseif point then
 				if state ~= "track" then setState(brain, "track") end
 				if goTo(brain, point.pos, revealed and speed * 0.8 or WALK_SPEED + 2) or (point.pos - root.Position).Magnitude < 4 then
 					brain.trailFloor = point.t
@@ -1606,6 +1886,39 @@ local function infectCharacter(plr, character)
 	end
 	plr:SetAttribute("InfectPending", nil)
 	plr:SetAttribute("InfectSpawn", nil)
+	-- the flesh mends itself: every injury closes 30s after it happened, torn limbs grow back as meat,
+	-- and the body regains 2 hp every 10 seconds
+	task.spawn(function()
+		local since = {}
+		local ticks = 0
+		while plr.Character == character and character.Parent and humanoid.Health > 0 do
+			task.wait(1)
+			ticks += 1
+			if ticks % 10 == 0 then humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + 2) end
+			local anyInjury = false
+			for key in pairs(PART_NAME) do
+				local level = character:GetAttribute("Injury_" .. key) or 0
+				if level <= 0 then
+					since[key] = nil
+				else
+					anyInjury = true
+					since[key] = since[key] or os.clock()
+					if os.clock() - since[key] >= 30 then
+						since[key] = nil
+						if level >= 3 and key ~= "Head" and key ~= "Torso" then
+							local ok = FallDamageController.RestorePart(character, key)
+							if ok then fleshShell(character, key) end
+						else
+							character:SetAttribute("Injury_" .. key, 0)
+						end
+					end
+				end
+			end
+			if not anyInjury and (character:GetAttribute("Bleeding") or 0) > 0 then
+				FallDamageController.StopBleeding(character)
+			end
+		end
+	end)
 	humanoid.Died:Connect(function()
 		-- the infection dies with the body
 		if plr.Character == character then
@@ -1631,6 +1944,45 @@ end
 for _, plr in ipairs(Players:GetPlayers()) do watchPlayer(plr) end
 Players.PlayerAdded:Connect(watchPlayer)
 Players.PlayerRemoving:Connect(function(plr) pendingInfection[plr] = nil end)
+
+-- tentacles: lash out, catch, ragdoll and reel the victim in. Clients draw the tentacles.
+local GRAB_REACH = 26
+function tentacleGrab(brain, victim)
+	local now = os.clock()
+	local model = brain.model
+	brain.nextGrab = now + rng:NextNumber(7, 11)
+	brain.grabUntil = now + 1.6
+	local value = model:FindFirstChild("GS_GrabTarget")
+	if value then value.Value = victim end
+	model:SetAttribute("GS_GrabHit", false)
+	model:SetAttribute("GS_GrabAt", serverNow())
+	fx(brain, "Shriek")
+	task.delay(0.35, function()
+		local vr = victim:FindFirstChild("HumanoidRootPart")
+		if not model.Parent or not aliveCharacter(victim) or not vr then return end
+		if (vr.Position - brain.root.Position).Magnitude > GRAB_REACH or not canSee(brain, victim) then return end
+		model:SetAttribute("GS_GrabHit", true)
+		fx(brain, "Hit")
+		makeNoise(victim, 60, 1.5)
+		victim:SetAttribute("AC_TeleportAt", serverNow())
+		FallDamageController.Ragdoll(victim, 2.4, 0.55)
+		local torso = victim:FindFirstChild("Torso") or vr
+		local started = os.clock()
+		while os.clock() - started < 1 and model.Parent and aliveCharacter(victim) do
+			local offset = brain.root.Position + brain.root.CFrame.LookVector * 3 - torso.Position
+			if offset.Magnitude < 3.5 then break end
+			local pull = offset.Unit * math.min(offset.Magnitude * 3.2, 48) + Vector3.new(0, 6, 0)
+			for _, part in ipairs(victim:GetChildren()) do
+				if part:IsA("BasePart") and not part.Anchored then part.AssemblyLinearVelocity = pull end
+			end
+			task.wait(0.05)
+		end
+		victim:SetAttribute("AC_TeleportAt", serverNow())
+	end)
+	task.delay(1.6, function()
+		if value and value.Value == victim then value.Value = nil end
+	end)
+end
 
 local function thinkFlesh(brain)
 	local now = os.clock()
@@ -1667,8 +2019,15 @@ local function thinkFlesh(brain)
 			setState(brain, "chase")
 			fx(brain, "Shriek")
 		else
-			local point = freshestTrailPoint(brain, 160)
-			if point then
+			local heard = followNoise(brain, now, WALK_SPEED + 3)
+			local point = not brain.noisePos and freshestTrailPoint(brain, 160) or nil
+			if heard and (heard.HumanoidRootPart.Position - root.Position).Magnitude < 10 then
+				setTarget(brain, heard)
+				setState(brain, "chase")
+				fx(brain, "Shriek")
+			elseif brain.noisePos then
+				if state ~= "track" then setState(brain, "track") end
+			elseif point then
 				if state ~= "track" then setState(brain, "track") end
 				if goTo(brain, point.pos, WALK_SPEED + 2) or (point.pos - root.Position).Magnitude < 4 then
 					brain.trailFloor = point.t
@@ -1686,7 +2045,16 @@ local function thinkFlesh(brain)
 		if not targetRoot or now - brain.lastSeen > 12 then
 			setState(brain, "track")
 		else
-			attackStep(brain, now, targetRoot, speed, "chase", brain.data.swingCooldown or 1.3, 0.32)
+			local grabbing = brain.grabUntil and now < brain.grabUntil
+			if not grabbing and distance > 7 and distance < 24 and now >= (brain.nextGrab or 0)
+				and not brain.target:GetAttribute("Ragdolled") and canSee(brain, brain.target) then
+				tentacleGrab(brain, brain.target)
+			elseif grabbing then
+				stop(brain)
+				face(brain, targetRoot.Position)
+			else
+				attackStep(brain, now, targetRoot, speed, "chase", brain.data.swingCooldown or 1.3, 0.32)
+			end
 		end
 	elseif state == "eat" then
 		eatStep(brain, now, function()
@@ -1703,34 +2071,6 @@ local function thinkFlesh(brain)
 end
 
 -- ===== C-207 "The Listener": blind, hunts by sound =====
-local lastNoise = {}
-local function loudness(character)
-	local root = character:FindFirstChild("HumanoidRootPart")
-	if not root then return 0 end
-	local vel = root.AssemblyLinearVelocity
-	local noise = 0
-	local speed = flat(vel).Magnitude
-	if speed > 12 then noise = speed end
-	if vel.Y > 10 then noise = math.max(noise, 18) end
-	if character:GetAttribute("Ragdolled") then noise = math.max(noise, 20) end
-	local extra = lastNoise[character]
-	if extra and os.clock() - extra < 1 then noise = math.max(noise, 26) end
-	return noise
-end
-
-local function listen(brain)
-	local best, bestScore, bestPos = nil, 0, nil
-	for _, character in ipairs(livingTargets()) do
-		local noise = loudness(character)
-		if noise > 0 then
-			local d = (character.HumanoidRootPart.Position - brain.root.Position).Magnitude
-			local score = noise * 4 - d
-			if score > bestScore then best, bestScore, bestPos = character, score, character.HumanoidRootPart.Position end
-		end
-	end
-	return best, bestPos
-end
-
 local function thinkListener(brain)
 	local now = os.clock()
 	local model = brain.model
@@ -1742,7 +2082,7 @@ local function thinkListener(brain)
 		return true
 	end
 
-	local heard, heardPos = listen(brain)
+	local heard, heardPos = hear(brain)
 	if heard then
 		brain.noisePos = heardPos
 		brain.lastHeard = now
@@ -1875,7 +2215,7 @@ strikeRemote.OnServerEvent:Connect(function(player)
 	local right = character:GetAttribute("Injury_RightArm") or 0
 	if left >= 2 and right >= 2 then return end
 	local root = character.HumanoidRootPart
-	lastNoise[character] = now
+	makeNoise(character, 45, 1)
 	local infected = isInfected(character)
 	local function inFront(position, reach)
 		local offset = position - root.Position
@@ -1910,7 +2250,6 @@ strikeRemote.OnServerEvent:Connect(function(player)
 end)
 Players.PlayerRemoving:Connect(function(player)
 	lastStrike[player] = nil
-	if player.Character then lastNoise[player.Character] = nil end
 end)
 
 control.OnInvoke = function(action, ...)
