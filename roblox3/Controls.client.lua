@@ -119,11 +119,14 @@ local function register(m)
 end
 
 -- ===== the keyboard ability panel =====
+-- a fixed-height box with the cards stacked from its BOTTOM edge: more cards grow the stack upward, wherever the
+-- panel was moved to, and it never runs off the bottom of the screen
+local PANEL_W, PANEL_H = 230, 420
 local abilityPanel = create("Frame", {
-	Name = "Abilities", Size = UDim2.fromOffset(246, 10), BackgroundTransparency = 1,
-	AutomaticSize = Enum.AutomaticSize.Y, Parent = gui, Visible = false,
+	Name = "Abilities", Size = UDim2.fromOffset(PANEL_W, PANEL_H), BackgroundTransparency = 1, Parent = gui, Visible = false,
 })
-create("UIListLayout", {Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder, Parent = abilityPanel})
+create("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder,
+	VerticalAlignment = Enum.VerticalAlignment.Bottom, Parent = abilityPanel})
 
 -- infected header: stage, progress to the next stage, and the Mother
 local header = create("Frame", {
@@ -146,34 +149,40 @@ local motherText = create("TextLabel", {
 })
 
 local cards = {}
+local KEY_RIM = Color3.fromRGB(200, 192, 184)
 local function card(order, key, name, desc, id)
+	-- calm and compact: a dark strip, a small key chip with a light rim, the action and a short hint
 	local frame = create("Frame", {
-		Size = UDim2.new(1, 0, 0, 44), BackgroundColor3 = STYLE.Panel, BackgroundTransparency = 0.25,
+		Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = STYLE.Panel, BackgroundTransparency = 0.5,
 		BorderSizePixel = 0, LayoutOrder = order, Parent = abilityPanel,
-	}, {create("UIStroke", {Color = Color3.fromRGB(45, 10, 10), Thickness = 1})})
-	local keyBox = create("TextLabel", {
-		Position = UDim2.fromOffset(6, 6), Size = UDim2.fromOffset(32, 32), BackgroundColor3 = Color3.fromRGB(16, 4, 5),
-		BorderSizePixel = 0, Font = STYLE.Font, Text = key, TextSize = #key > 1 and 11 or 18, TextColor3 = STYLE.Ink, Rotation = -3,
-		ClipsDescendants = true, Parent = frame,
+	}, {
+		create("UICorner", {CornerRadius = UDim.new(0, 4)}),
+		create("UIGradient", {Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 0.7)})}),
 	})
-	local keyStroke = create("UIStroke", {Color = STYLE.Blood, Thickness = 1.5, Parent = keyBox})
+	local keyBox = create("TextLabel", {
+		Position = UDim2.fromOffset(5, 4), Size = UDim2.fromOffset(#key > 1 and 34 or 22, 22), BackgroundColor3 = Color3.fromRGB(20, 18, 18),
+		BorderSizePixel = 0, Font = STYLE.Font, Text = key, TextSize = #key > 1 and 10 or 13, TextColor3 = STYLE.Ink,
+		ClipsDescendants = true, Parent = frame,
+	}, {create("UICorner", {CornerRadius = UDim.new(0, 3)})})
+	local keyStroke = create("UIStroke", {Color = KEY_RIM, Thickness = 1, Transparency = 0.45, Parent = keyBox})
 	-- cooldown: a dark curtain over the key that drains away
 	local curtain = create("Frame", {
 		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0),
 		BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.35, BorderSizePixel = 0, ZIndex = 2, Parent = keyBox,
 	})
+	local left = #key > 1 and 46 or 34
 	local title = create("TextLabel", {
-		Position = UDim2.fromOffset(46, 5), Size = UDim2.new(1, -52, 0, 18), BackgroundTransparency = 1, Font = STYLE.Font,
-		Text = name, TextSize = 15, TextColor3 = STYLE.Ink, TextXAlignment = Enum.TextXAlignment.Left, Parent = frame,
+		Position = UDim2.fromOffset(left, 2), Size = UDim2.new(1, -left - 56, 0, 15), BackgroundTransparency = 1, Font = STYLE.Font,
+		Text = name, TextSize = 13, TextColor3 = STYLE.Ink, TextXAlignment = Enum.TextXAlignment.Left, Parent = frame,
 	})
 	local sub = create("TextLabel", {
-		Position = UDim2.fromOffset(46, 23), Size = UDim2.new(1, -52, 0, 15), BackgroundTransparency = 1, Font = STYLE.Font,
-		Text = desc, TextSize = 12, TextColor3 = STYLE.Dim, TextXAlignment = Enum.TextXAlignment.Left,
+		Position = UDim2.fromOffset(left, 16), Size = UDim2.new(1, -left - 6, 0, 12), BackgroundTransparency = 1, Font = STYLE.Font,
+		Text = desc, TextSize = 10, TextColor3 = STYLE.Dim, TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd, Parent = frame,
 	})
 	local status = create("TextLabel", {
-		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 5), Size = UDim2.fromOffset(60, 16),
-		BackgroundTransparency = 1, Font = STYLE.Font, Text = "", TextSize = 12, TextColor3 = STYLE.Ready,
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -6, 0, 3), Size = UDim2.fromOffset(52, 13),
+		BackgroundTransparency = 1, Font = STYLE.Font, Text = "", TextSize = 11, TextColor3 = STYLE.Ready,
 		TextXAlignment = Enum.TextXAlignment.Right, Parent = frame,
 	})
 	local c = {frame = frame, keyBox = keyBox, keyStroke = keyStroke, curtain = curtain, title = title, sub = sub, status = status}
@@ -207,17 +216,17 @@ local function setCard(c, visible, ready, left, total, locked, lockText)
 		c.status.Text = lockText or "locked"
 		c.status.TextColor3 = STYLE.Faint
 		c.title.TextColor3 = STYLE.Faint
-		c.keyStroke.Color = Color3.fromRGB(50, 14, 14)
+		c.keyStroke.Color = STYLE.Faint
 	elseif left > 0 then
 		c.status.Text = string.format("%.1fs", left)
 		c.status.TextColor3 = STYLE.Dim
 		c.title.TextColor3 = STYLE.Dim
-		c.keyStroke.Color = Color3.fromRGB(70, 18, 18)
+		c.keyStroke.Color = STYLE.Dim
 	else
 		c.status.Text = ready and "ready" or ""
 		c.status.TextColor3 = STYLE.Ready
 		c.title.TextColor3 = STYLE.Ink
-		c.keyStroke.Color = STYLE.Blood
+		c.keyStroke.Color = KEY_RIM
 	end
 end
 
@@ -226,7 +235,7 @@ if not TOUCH then
 		id = "abilities", name = "ABILITIES", frame = abilityPanel, scalable = true,
 		defaultPos = function()
 			local size = gui.AbsoluteSize
-			return UDim2.fromOffset(size.X - 246 - 18, size.Y - abilityPanel.AbsoluteSize.Y - 18)
+			return UDim2.fromOffset(size.X - PANEL_W - 18, size.Y - PANEL_H - 18)
 		end,
 		setAlpha = function(a) abilityPanel:SetAttribute("GS_Alpha", a) end,
 	})
@@ -612,7 +621,14 @@ RunService.RenderStepped:Connect(function()
 		if not layout.abilities then
 			-- default: bottom-right corner, growing upward as cards appear
 			local size = gui.AbsoluteSize
-			abilityPanel.Position = UDim2.fromOffset(size.X - 246 - 18, size.Y - abilityPanel.AbsoluteSize.Y - 18)
+			abilityPanel.Position = UDim2.fromOffset(size.X - PANEL_W - 18, size.Y - PANEL_H - 18)
+		elseif not editorGui.Enabled then
+			-- a spot saved for the old, shorter panel: keep the bottom of the stack on the screen
+			local size = gui.AbsoluteSize
+			local p = abilityPanel.AbsolutePosition - gui.AbsolutePosition
+			if p.Y + PANEL_H > size.Y - 6 then
+				abilityPanel.Position = UDim2.fromOffset(p.X, size.Y - PANEL_H - 6)
+			end
 		end
 		header.Visible = inf
 		if inf then
@@ -656,7 +672,7 @@ RunService.RenderStepped:Connect(function()
 		-- fade (editor opacity)
 		local a = abilityPanel:GetAttribute("GS_Alpha") or 0
 		for _, cardData in pairs(cards) do
-			cardData.frame.BackgroundTransparency = 0.25 + a * 0.75
+			cardData.frame.BackgroundTransparency = 0.5 + a * 0.5
 			cardData.title.TextTransparency = a
 			cardData.sub.TextTransparency = a
 			cardData.status.TextTransparency = a

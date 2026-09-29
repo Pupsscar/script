@@ -8,10 +8,23 @@ local ItemData=require(script.Parent:WaitForChild("ItemData"))
 local Bus=require(script.Parent:WaitForChild("AudioBus"))
 local GameSettings=require(script.Parent:WaitForChild("GameSettings"))
 local Audio={}
+-- sounds only the combat code uses (Roblox's public Pro Sound Effects library)
+local EXTRA={
+ FlareLaunch={9114444008,9114444328}, -- Fire Whoosh 3 / Fire Whoosh 10
+ FlareHiss=9125647873, -- Sharp Tubular Whoosh Fast Hiss
+}
+local function soundId(name)
+ local e=EXTRA[name]
+ if e then
+  if typeof(e)=="table" then e=e[math.random(1,#e)] end
+  return "rbxassetid://"..tostring(e)
+ end
+ return ItemData.Sound(name)
+end
 local last={}
 local shellSlot=0
-local duration={Shotgun=1.6,Flare=1.2,Rack=.6,Click=.3,ShellIn=.4,ShellDrop=.6,Swing=.45,Cloth=.7,Plate=.45,MetalHit=.6,BloodHit=.4,Flesh=.45,Bone=.55,Rattle=.9,Spray=.9,ShockWhoosh=.6,Shock=.8}
-local CHANNEL={Shotgun="Shot",Flare="Shot",Rack="Action",Click="Action",ShellIn="Action",Swing="Weapon",ShockWhoosh="Weapon",Shock="Weapon"}
+local duration={FlareLaunch=1.4,FlareHiss=1.2,Shotgun=1.6,Flare=1.2,Rack=.6,Click=.3,ShellIn=.4,ShellDrop=.6,Swing=.45,Cloth=.7,Plate=.45,MetalHit=.6,BloodHit=.4,Flesh=.45,Bone=.55,Rattle=.9,Spray=.9,ShockWhoosh=.6,Shock=.8}
+local CHANNEL={FlareLaunch="Shot",Shotgun="Shot",Flare="Shot",Rack="Action",Click="Action",ShellIn="Action",Swing="Weapon",ShockWhoosh="Weapon",Shock="Weapon"}
 local PRIORITY={Shot=60,ShotTail=40,Action=50,Weapon=45}
 
 local function make(name,id,parent,volume,speed,range,looped)
@@ -34,7 +47,7 @@ end
 -- channel: optional override
 function Audio.Play(name,parent,volume,speed,range,looped,channel)
  if not parent or not parent.Parent then return end
- local id=ItemData.Sound(name) if not id then return end
+ local id=soundId(name) if not id then return end
  local now=os.clock()
  if parent:IsA("BasePart") then
   local p=parent.Position local key=name..math.floor(p.X/8)..","..math.floor(p.Y/8)..","..math.floor(p.Z/8)
@@ -60,7 +73,7 @@ function Audio.Shot(name,parent,volume,speed,range)
   eq.HighGain=-math.clamp((d-45)/6,0,26) eq.MidGain=-math.clamp((d-45)/14,0,10) eq.LowGain=2
   eq.Parent=s
  end
- local id=ItemData.Sound(name)
+ local id=soundId(name)
  task.delay(.09+math.min(d,200)/1500,function()
   if not parent.Parent or not id then return end
   local tail=make(name.."Tail",id,parent,(volume or .8)*.28,(speed or 1)*.62,(range or 300)*1.2,false)

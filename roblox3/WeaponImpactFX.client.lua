@@ -48,7 +48,7 @@ local function makeFlare(position)
  trail.Color=ColorSequence.new(Color3.fromRGB(255,120,90),Color3.fromRGB(120,20,16))
  trail.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.1),NumberSequenceKeypoint.new(1,1)})
  trail.WidthScale=NumberSequence.new(1,.15) trail.Parent=core
- local hiss=Audio.Play("Sizzle",core,.35,1.45,70,true)
+ local hiss=Audio.Play("Sizzle",core,.3,1.6,70,true)
  return {core=core,heart=heart,light=light,hiss=hiss}
 end
 local function endFlight(f)
@@ -104,8 +104,10 @@ remote.OnClientEvent:Connect(function(kind,a,b,c,d,e,f)
   -- the thump and the whoosh of it leaving the barrel
   local head=typeof(shooter)=="Instance" and shooter:FindFirstChild("Head")
   if head then
-   Audio.Shot("Shotgun",head,.42,1.75,220)
-   Audio.Play("ShockWhoosh",head,.45,.6,120)
+   -- not a bang: the hammer snaps, the charge coughs and the flare rushes out hissing
+   Audio.Play("Click",head,.5,.7,40)
+   Audio.Play("FlareLaunch",head,.8,1,200)
+   Audio.Play("FlareHiss",head,.45,.9,120,false,"FlareHiss")
   end
  elseif kind=="flarebounce" then
   local fl=flights[a]

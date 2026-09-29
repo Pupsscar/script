@@ -170,7 +170,7 @@ local function flareLanded(position, normal, attacker)
 			for _, plr in ipairs(Players:GetPlayers()) do
 				local c = plr.Character
 				local r = c and c:FindFirstChild("HumanoidRootPart")
-				if r and (r.Position - position).Magnitude < 3.2 and (c:GetAttribute("Infected") or Svc.PvP() or plr.Character == attacker.Character) then
+				if r and (r.Position - position).Magnitude < 3.2 and (c:GetAttribute("Infected") or Svc.PvP()) then
 					setAlight(c, attacker, 4)
 				end
 			end
@@ -236,10 +236,18 @@ local function launchFlare(player,character,item,origin,direction)
    local step=velocity*dt+gravity*(0.5*dt*dt)
    local hit=workspace:Spherecast(position,0.15,step,params)
    if hit then
-    local model=classify(hit.Instance)
-    if model then
+    local model,kind=classify(hit.Instance)
+    if model and (kind=="monster" or canHurtPerson(character,model)) then
+     -- it sticks in them burning: the body catches fire at once
      resolveHit(player,character,item,hit,item.damage,velocity.Unit)
+     if kind~="monster" then setAlight(model,player,6) end
      remote:FireAllClients("flarestop",id,hit.Position,hit.Normal,hit.Instance)
+     return
+    elseif model then
+     -- someone it may not hurt (PvP off): it glances off them and burns on the floor
+     local down=workspace:Raycast(hit.Position,Vector3.new(0,-40,0),params)
+     if down then flareLanded(down.Position,down.Normal,player) end
+     remote:FireAllClients("flarestop",id,down and down.Position or hit.Position,down and down.Normal or nil)
      return
     end
     local speed=velocity.Magnitude
