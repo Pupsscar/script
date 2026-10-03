@@ -31,7 +31,7 @@ if not plugin then
 	return
 end
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 -- toolbar icon: upload MarrowAnimatorIcon.png (Creator Dashboard > Development Items > Decals / Images) and put its
 -- image ID here, for example "rbxassetid://1234567890". Empty = the button shows only its name.
 local ICON = ""
@@ -240,7 +240,8 @@ function U.parseValue(text, kind)
 	if kind == "boolean" then
 		local l = tostring(text):lower():gsub("%s", "")
 		return l == "true" or l == "1" or l == "yes" or l == "on"
-	elseif kind == "number" then return nums[1]
+	elseif kind == "number" or kind == "emit" then return nums[1]
+	elseif kind == "play" then return true
 	elseif kind == "Vector3" and #nums >= 3 then return Vector3.new(nums[1], nums[2], nums[3])
 	elseif kind == "Vector2" and #nums >= 2 then return Vector2.new(nums[1], nums[2])
 	elseif kind == "Color3" and #nums >= 3 then return Color3.fromRGB(nums[1], nums[2], nums[3])
@@ -442,7 +443,8 @@ function Store.load(folder)
 				local target = targetValue and targetValue:IsA("ObjectValue") and targetValue.Value or nil
 				if pf:GetAttribute("IsCamera") then target = workspace.CurrentCamera end
 				local pt = {folder = pf, target = target, property = pf:GetAttribute("Property") or "", kind = pf:GetAttribute("Kind") or "number",
-					isCamera = pf:GetAttribute("IsCamera") == true, keys = {}}
+					isCamera = pf:GetAttribute("IsCamera") == true, isItem = pf:GetAttribute("IsItem") == true, keys = {}}
+				pt.isAction = pt.kind == "emit" or pt.kind == "play"
 				for _, k in ipairs(pf:GetChildren()) do
 					if k:IsA("Configuration") then
 						table.insert(pt.keys, {inst = k, kind = "prop", track = pt, frame = k:GetAttribute("F") or 0, value = k:GetAttribute("V"),
@@ -818,8 +820,30 @@ function Anim.applyProps(frame)
 	if not S.proj then return end
 	for _, pt in ipairs(S.proj.props) do
 		local inst = pt.isCamera and workspace.CurrentCamera or pt.target
-		if inst and inst.Parent and pt.property ~= "" and #pt.keys > 0 and (not pt.isCamera or S.camPreview) then
+		if inst and inst.Parent and pt.property ~= "" and #pt.keys > 0 and not pt.isAction and (not pt.isCamera or S.camPreview) then
 			Anim.setProp(inst, pt.property, Anim.sampleValue(pt.keys, frame, pt.kind))
+		end
+	end
+end
+
+-- one-shot tracks (particle bursts, sounds) fire when the playhead passes their keys: frames in (from, to]
+function Anim.fireActions(from, to)
+	if not S.proj then return end
+	for _, pt in ipairs(S.proj.props) do
+		local inst = pt.target
+		if pt.isAction and inst and inst.Parent then
+			for _, k in ipairs(pt.keys) do
+				if k.frame > from and k.frame <= to then
+					pcall(function()
+						if pt.kind == "emit" then
+							inst:Emit(math.max(1, math.floor(tonumber(k.value) or 20)))
+						else
+							local ok = pcall(function() game:GetService("SoundService"):PlayLocalSound(inst) end)
+							if not ok then inst:Play() end
+						end
+					end)
+				end
+			end
 		end
 	end
 end
@@ -1083,22 +1107,47 @@ function Gizmo.hide()
 	Gizmo.proxy.Parent = nil
 end
 
+-- the item track being posed (a part or model animated by its pivot), if one is selected in POSE
+function Gizmo.itemTrack()
+	if not S.poseMode or not S.selPropFolder then return nil end
+	local pt = Draw.selectedProp()
+	if pt and pt.isItem and pt.target and pt.target.Parent then return pt end
+	return nil
+end
+
 function Gizmo.place()
 	if not Gizmo.arc then return end
+	if Gizmo.drag then return end
+	local frame, size, adornee
 	local j = S.poseMode and S.rig and S.selJoint and S.jointByName[S.selJoint]
-	if not j or not j.part1.Parent or not j.part0.Parent then
+	if j and j.part1.Parent and j.part0.Parent then
+		frame = j.part0.CFrame * j.rest * Anim.jointT(j.name, S.frame)
+		size = U.clamp(j.part1.Size.Magnitude * 0.55, 0.8, 8)
+		adornee = j.part1
+	else
+		local pt = Gizmo.itemTrack()
+		if pt then
+			local ok, pivot = pcall(Anim.getProp, pt.target, "Pivot")
+			if ok and typeof(pivot) == "CFrame" then
+				frame = pivot
+				local okSize, ext = pcall(function()
+					return pt.target:IsA("Model") and pt.target:GetExtentsSize() or pt.target.Size
+				end)
+				size = U.clamp((okSize and ext.Magnitude or 2) * 0.5, 0.8, 12)
+				adornee = pt.target
+			end
+		end
+	end
+	if not frame then
 		Gizmo.hide()
 		return
 	end
-	if Gizmo.drag then return end
-	local frame = j.part0.CFrame * j.rest * Anim.jointT(j.name, S.frame)
 	Gizmo.proxy.CFrame = (S.space == "world") and CFrame.new(frame.Position) or frame
-	local size = U.clamp(j.part1.Size.Magnitude * 0.55, 0.8, 8)
 	Gizmo.proxy.Size = Vector3.new(size, size, size)
 	Gizmo.proxy.Parent = View.folderNow()
 	Gizmo.arc.Visible = S.tool == "rotate"
 	Gizmo.move.Visible = S.tool == "move"
-	Gizmo.selBox.Adornee = j.part1
+	Gizmo.selBox.Adornee = adornee
 	Gizmo.selBox.Visible = true
 end
 
@@ -1114,8 +1163,16 @@ function Gizmo.snapDist(d)
 end
 
 function Gizmo.begin()
+	if not S.proj then return end
 	local j = S.selJoint and S.jointByName[S.selJoint]
-	if not j or not S.proj then return end
+	local item = not j and Gizmo.itemTrack()
+	if item then
+		if S.playing then Act.stop() end
+		local ok, pivot = pcall(Anim.getProp, item.target, "Pivot")
+		if ok then Gizmo.drag = {item = item, T0 = pivot, T = pivot, frame0 = pivot} end
+		return
+	end
+	if not j then return end
 	if S.playing then Act.stop() end
 	local T0 = Anim.jointT(j.name, S.frame)
 	local base = j.part0.CFrame * j.rest
@@ -1127,6 +1184,14 @@ function Gizmo.rotate(axis, angle)
 	if not d then return end
 	local a = Gizmo.snapAngle(angle)
 	local v = Vector3.FromAxis(axis)
+	if d.item then
+		local f0 = d.frame0
+		local p = (S.space == "world") and (CFrame.new(f0.Position) * CFrame.fromAxisAngle(v, a) * f0.Rotation) or (f0 * CFrame.fromAxisAngle(v, a))
+		d.T = p
+		Anim.setProp(d.item.target, "Pivot", p)
+		Act.status(("Rotating %s around %s: %s deg"):format(d.item.target.Name, axis.Name, U.fmt(math.deg(a), 1)))
+		return
+	end
 	local newT
 	if S.space == "world" then
 		local f0 = d.frame0
@@ -1146,6 +1211,13 @@ function Gizmo.translate(face, distance)
 	local s = Gizmo.snapDist(distance)
 	local dir = Vector3.FromNormalId(face)
 	local worldDir = (S.space == "world") and dir or d.frame0:VectorToWorldSpace(dir)
+	if d.item then
+		local p = d.frame0 + worldDir * s
+		d.T = p
+		Anim.setProp(d.item.target, "Pivot", p)
+		Act.status(("Moving %s: %s studs"):format(d.item.target.Name, U.fmt(s, 3)))
+		return
+	end
 	local newT = d.base:Inverse() * (d.frame0 + worldDir * s)
 	d.T = newT
 	S.pending[d.joint.name] = newT
@@ -1157,12 +1229,29 @@ function Gizmo.finish()
 	local d = Gizmo.drag
 	Gizmo.drag = nil
 	if not d then return end
+	if d.item then
+		if d.T == d.T0 then
+			Gizmo.place()
+		else
+			Act.commitItem(d.item, d.T)
+		end
+		return
+	end
 	if d.T == d.T0 then
 		S.pending[d.joint.name] = nil
 		Gizmo.place()
 		return
 	end
 	Act.commitJoint(d.joint.name, d.T)
+end
+
+-- the item track a clicked part belongs to
+function Gizmo.itemAt(part)
+	if not part or not S.proj then return nil end
+	for _, pt in ipairs(S.proj.props) do
+		if pt.isItem and pt.target and (part == pt.target or part:IsDescendantOf(pt.target)) then return pt end
+	end
+	return nil
 end
 
 -- the visible part under the mouse (looks through invisible parts such as HumanoidRootPart, ghosts and dots)
@@ -1199,7 +1288,13 @@ function Gizmo.mouseDown()
 			return
 		end
 	end
+	local item = Gizmo.itemAt(target)
+	if item then
+		Act.selectProp(item.folder)
+		return
+	end
 	Act.selectJoint(nil)
+	Act.selectProp(nil)
 end
 
 function Gizmo.mouseMove()
@@ -1215,6 +1310,12 @@ function Gizmo.mouseMove()
 			Gizmo.hoverBox.Visible = true
 			return
 		end
+	end
+	local item = Gizmo.itemAt(target)
+	if item and item.folder ~= S.selPropFolder then
+		Gizmo.hoverBox.Adornee = item.target
+		Gizmo.hoverBox.Visible = true
+		return
 	end
 	Gizmo.hoverBox.Visible = false
 end
@@ -1327,23 +1428,33 @@ end
 function UI.build(widget)
 	UI.root = U.new("Frame", {Name = "Root", Size = UDim2.fromScale(1, 1), BackgroundColor3 = T.bg, BorderSizePixel = 0, Parent = widget})
 
-	-- ===== toolbar rows =====
+	-- ===== the menu bar, like a program of its own =====
 	local b1 = UI.makeBar(0)
+	b1.bar.BackgroundColor3 = T.bg
+	UI.menuButtons = {}
+	for _, m in ipairs({
+		{"File", function(b) Act.fileMenu(b) end, "New, open, import, export, publish"},
+		{"Edit", function(b) Act.editMenu(b) end, "Undo, copy / paste, mirror, keys and time tools"},
+		{"View", function(b) Act.viewMenu(b) end, "Onion skin, motion path, camera, snapping, speed"},
+		{"Add", function(b) Act.addMenu(b) end, "Add a rig, an item, a property, the camera or an event"},
+		{"Effects", function(b) Act.effectsMenu(b) end, "Fire, smoke, sparks, blood, explosion, light flash, sound"},
+		{"Help", function() Act.help() end, "Controls and hotkeys"},
+	}) do
+		local b = b1.add(m[1], m[1] == "Effects" and 62 or 48, m[2], m[3])
+		b.BackgroundTransparency = 1
+		b.Font = T.bold
+		table.insert(UI.menuButtons, b)
+	end
+	b1.gap()
 	UI.projBtn = b1.add("Animation: none", 230, Act.projectMenu, "Pick, create, rename, duplicate or delete an animation")
-	b1.add("+ New", 58, Act.newProject, "A new animation for the selected rig")
+	UI.rigLabel = b1.label("Rig: none", 180, T.dim)
 	b1.gap()
-	UI.rigLabel = b1.label("Rig: none", 190, T.dim)
-	b1.add("Attach selected", 112, Act.attachSelected, "Select a model with Motor6D joints (Explorer or viewport), then press this")
-	b1.add("Release", 62, Act.releaseRig, "Put the rig back in its rest pose and stop showing the animation on it")
-	b1.gap()
-	b1.add("Import", 62, Act.importMenu, "Import a KeyframeSequence or an animation ID")
-	b1.add("Export", 62, Act.exportMenu, "Export a KeyframeSequence or a cutscene ModuleScript")
-	b1.add("Publish", 66, function() IO.publish() end, "Export and upload the animation to Roblox")
-	b1.gap()
-	b1.add("Tools", 56, Act.toolsMenu, "Insert / remove time, close the loop, change FPS, clear keys")
-	b1.add("Help", 50, Act.help, "Controls and hotkeys")
+	UI.publishBtn = b1.add("Publish", 78, function() IO.publish() end, "Save the animation and upload it to Roblox in one click")
+	UI.setActive(UI.publishBtn, true, T.accent)
+	UI.publishBtn.Font = T.bold
 	UI.bar1 = b1
 
+	-- ===== playback and posing =====
 	local b2 = UI.makeBar(L.BAR)
 	b2.add("|<", 28, Act.toStart, "First frame (Home)")
 	b2.add("<<", 30, Act.prevKey, "Previous key ( [ )")
@@ -1357,15 +1468,14 @@ function UI.build(widget)
 	UI.timeLabel = b2.label("/ 120   0.00 s", 116, T.dim)
 	UI.speedBtn = b2.add("1x", 40, Act.speedMenu, "Preview speed")
 	b2.gap()
-	UI.poseBtn = b2.add("POSE", 54, Act.togglePoseMode, "Pose mode: click body parts in the viewport, turn and move them (P)")
+	UI.poseBtn = b2.add("POSE", 54, Act.togglePoseMode, "Pose mode: click body parts or items in the viewport, turn and move them (P)")
 	UI.rotBtn = b2.add("Rotate", 58, function() Act.setTool("rotate") end, "Rotate rings (R)")
 	UI.moveBtn = b2.add("Move", 50, function() Act.setTool("move") end, "Move arrows (G)")
 	UI.spaceBtn = b2.add("Local", 54, Act.toggleSpace, "Local or world axes (L)")
 	UI.snapBtn = b2.add("Snap", 112, Act.snapMenu, "Angle and distance snapping (N switches it on / off)")
-	UI.autoBtn = b2.add("Auto-key", 70, Act.toggleAutoKey, "Write a key at the playhead whenever you pose a joint")
-	UI.onionBtn = b2.add("Onion", 52, Act.toggleOnion, "Ghosts of the previous and next key poses (O)")
-	UI.pathBtn = b2.add("Path", 46, Act.togglePath, "Motion path of the selected part (T)")
-	UI.camBtn = b2.add("Camera", 64, Act.toggleCamera, "Look through the animated camera (camera tracks)")
+	b2.gap()
+	UI.keyBtn = b2.add("+ Key", 56, function() Act.keySelected() end, "Key the selected joint or track at the playhead (K)")
+	UI.autoBtn = b2.add("Auto-key", 70, Act.toggleAutoKey, "Write a key at the playhead whenever you pose something")
 	UI.bar2 = b2
 
 	-- ===== body =====
@@ -1675,6 +1785,7 @@ end
 
 function Draw.propLabel(pt)
 	local target = pt.isCamera and "Camera" or (pt.target and pt.target.Name or "(missing)")
+	if pt.isItem then return target .. "   (item)" end
 	return target .. "." .. pt.property
 end
 
@@ -1805,7 +1916,7 @@ function Draw.list()
 				r.arrow.Text = ""
 				r.name.Text = row.label
 				r.name.Font = T.font
-				r.name.TextColor3 = row.prop.isCamera and T.blue or T.green
+				r.name.TextColor3 = row.prop.isCamera and T.blue or (row.prop.isItem and T.amber or (row.prop.isAction and T.violet or T.green))
 				local onKey = Act.keyAt(row.prop.keys, U.round(S.frame)) ~= nil
 				r.key.BackgroundColor3 = onKey and T.bone or T.faint
 			else
@@ -2147,10 +2258,14 @@ function Draw.inspector()
 	local pt = Draw.selectedProp()
 	ins.prop.Visible = pt ~= nil
 	if pt then
-		ins.propTitle.Text = "PROPERTY   " .. pt.property
+		ins.propTitle.Text = pt.isItem and ("ITEM   " .. (pt.target and pt.target.Name or "?"))
+			or ((pt.isAction and "EFFECT   " or "PROPERTY   ") .. pt.property)
 		ins.propTarget.Text = pt.isCamera and "the camera" or (pt.target and pt.target:GetFullName() or "(the object is gone)")
 		local value = Anim.sampleValue(pt.keys, S.frame, pt.kind)
-		if value == nil then
+		if pt.isAction then
+			local k = Act.keyAt(pt.keys, frame)
+			value = k and k.value or nil
+		elseif value == nil then
 			local target = pt.isCamera and workspace.CurrentCamera or pt.target
 			local ok, cur = pcall(function() return Anim.getProp(target, pt.property) end)
 			value = ok and cur or nil
@@ -2193,9 +2308,6 @@ function Draw.toolbar()
 	UI.snapBtn.Text = S.snapOn and ("Snap " .. U.fmt(S.snapRot, 1) .. "° " .. U.fmt(S.snapMove, 3)) or "Snap off"
 	UI.setActive(UI.snapBtn, S.snapOn, T.panel3)
 	UI.setActive(UI.autoBtn, S.autoKey)
-	UI.setActive(UI.onionBtn, S.onion)
-	UI.setActive(UI.pathBtn, S.path)
-	UI.setActive(UI.camBtn, S.camPreview)
 	local info = {}
 	if S.rig then table.insert(info, #S.joints .. " joints") table.insert(info, "preview: " .. S.applyMode) end
 	if S.proj then table.insert(info, S.proj.fps .. " FPS") end
@@ -2205,9 +2317,9 @@ end
 function Draw.empty()
 	local text = ""
 	if not S.proj then
-		text = "Select a rig (a model with Motor6D joints) and press  + New.\nOr pick an animation from the Animation menu."
-	elseif not S.rig then
-		text = "This animation has no rig shown right now.\nSelect the rig and press  Attach selected."
+		text = "Select a character (or any part / model) in the viewport,\nthen  Add > Rig  or  Add > Item.   File > Open  for saved animations."
+	elseif not S.rig and #S.proj.props == 0 then
+		text = "Nothing on the timeline yet.\nSelect a character or a part, then  Add > Rig  or  Add > Item."
 	end
 	UI.emptyNote.Text = text
 	UI.emptyNote.Visible = text ~= ""
@@ -2477,6 +2589,7 @@ function Act.play()
 	if S.frame >= S.proj.length then S.frame = 0 end
 	S.pending = {}
 	S.playing = true
+	Anim.fireActions(S.frame - 0.5, S.frame)
 	Gizmo.hide()
 	Draw.toolbar()
 end
@@ -2513,7 +2626,9 @@ end
 
 function Act.step(d)
 	if S.playing then Act.stop() end
-	Act.setFrame(U.round(S.frame) + d)
+	local before = U.round(S.frame)
+	Act.setFrame(before + d)
+	if d > 0 then Anim.fireActions(before, U.round(S.frame)) end
 end
 
 function Act.toStart()
@@ -2652,6 +2767,14 @@ function Act.keyProp(pt)
 	local target = pt.isCamera and workspace.CurrentCamera or pt.target
 	if not target then
 		Act.status("The object of this track is gone", true)
+		return
+	end
+	if pt.isAction then
+		-- a burst / sound key: the count (or "play") of the nearest key, or a default
+		local last = pt.keys[#pt.keys]
+		local value = last and last.value or (pt.kind == "emit" and 20 or true)
+		local f = U.round(S.frame)
+		Hist.run("Marrow: key " .. pt.property, function() Store.setPropKey(pt, f, value, "Constant", "InOut") end, true)
 		return
 	end
 	local ok, value = pcall(Anim.getProp, target, pt.property)
@@ -3421,6 +3544,11 @@ function Act.addPropertyMenu()
 			end
 		end
 	end
+	if target:IsA("ParticleEmitter") then
+		table.insert(items, {text = "Emit   (a burst of particles)", fn = function() Act.addActionTrack(target, "emit") end})
+	elseif target:IsA("Sound") then
+		table.insert(items, {text = "Play   (the sound starts)", fn = function() Act.addActionTrack(target, "play") end})
+	end
 	table.insert(items, {sep = true})
 	table.insert(items, {text = "Another property...", fn = function()
 		UI.dialog("Property track", "Type the property name exactly as the Properties window shows it.",
@@ -3678,8 +3806,8 @@ end
 -- ===== modes and toggles =====
 function Act.setPoseMode(on)
 	if on then
-		if not S.rig then
-			Act.status("Attach a rig first", true)
+		if not S.rig and not Act.hasItems() then
+			Act.status("Add a rig (Add > Rig) or an item (Add > Item) first", true)
 			return
 		end
 		if S.playing then Act.stop() end
@@ -3706,7 +3834,7 @@ end
 function Act.setTool(tool)
 	S.tool = tool
 	Act.saveSetting("tool", tool)
-	if not S.poseMode and S.rig then Act.setPoseMode(true) end
+	if not S.poseMode and (S.rig or Act.hasItems()) then Act.setPoseMode(true) end
 	Draw.toolbar()
 	Gizmo.place()
 end
@@ -3791,8 +3919,11 @@ function Act.help()
 	U.new("TextLabel", {Size = UDim2.new(1, -10, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Font = T.font,
 		TextSize = 13, TextColor3 = T.text, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
 		Text = table.concat({
-			"START:  select a rig (a model with Motor6D joints) and press + New, or Attach selected for an open animation.",
-			"POSE:  press POSE (P), click a body part in the viewport, drag the rings to turn it (R) or the arrows to move it (G).",
+			"START:  select a character (anything with Motor6D) and Add > Rig, or any part / model and Add > Item.",
+			"POSE:  press POSE (P), click a body part or an item in the viewport, drag the rings to turn it (R) or the arrows to move it (G).",
+			"EFFECTS:  select a part (or click it in POSE), Effects > Fire / Smoke / Sparks / Blood / Explosion / Light flash / Sound.",
+			"    They are keyed at the playhead: drag their keys to retime them. Add > Hold item in hand welds a tool to a hand.",
+			"PUBLISH:  the red Publish button exports the animation and opens the Roblox upload window.",
 			"    L switches local / world axes, N switches snapping. With Auto-key on every change is keyed at the playhead.",
 			"",
 			"KEYS:  work in this window (click the timeline first) and in the 3D view while POSE is on.",
@@ -4184,6 +4315,7 @@ for _, s in ipairs({"Sine", "Quad", "Cubic", "Quart", "Quint", "Exponential", "C
 	STYLES[s] = Enum.EasingStyle[s]
 end
 local DIRS = {In = Enum.EasingDirection.In, Out = Enum.EasingDirection.Out, InOut = Enum.EasingDirection.InOut}
+local ACTIONS = {emit = true, play = true}
 
 local function ease(t, style, dir)
 	if style == "Constant" then return 0 end
@@ -4309,7 +4441,7 @@ function Cutscene.Play(options)
 	local frame = 0
 	local function applyProps(f)
 		for _, p in ipairs(props) do
-			local v = sample(p.track.keys, f, p.track.kind)
+			local v = not ACTIONS[p.track.kind] and sample(p.track.keys, f, p.track.kind) or nil
 			if v ~= nil then
 				pcall(function()
 					if p.track.property == "Pivot" then p.inst:PivotTo(v) else p.inst[p.track.property] = v end
@@ -4325,6 +4457,19 @@ function Cutscene.Play(options)
 	local function fireMarkers(from, to)
 		for _, m in ipairs(data.markers) do
 			if m[1] > from and m[1] <= to then markerEvent:Fire(m[2], m[3]) end
+		end
+		-- particle bursts and sounds
+		for _, p in ipairs(props) do
+			local kind = p.track.kind
+			if ACTIONS[kind] then
+				for _, k in ipairs(p.track.keys) do
+					if k[1] > from and k[1] <= to then
+						pcall(function()
+							if kind == "emit" then p.inst:Emit(math.max(1, math.floor(tonumber(k[2]) or 20))) else p.inst:Play() end
+						end)
+					end
+				end
+			end
 		end
 	end
 
@@ -4616,6 +4761,427 @@ function Act.poseLibraryMenu(b)
 end
 
 -- ===================================================================================================
+-- items: any part or model, animated by its pivot and posed with the same rings and arrows
+-- ===================================================================================================
+function Act.hasItems()
+	if not S.proj then return false end
+	for _, pt in ipairs(S.proj.props) do
+		if pt.isItem then return true end
+	end
+	return false
+end
+
+-- a property track folder (call inside Hist.run)
+function Store.newPropTrack(target, prop, kind, attrs)
+	local props = Store.child(S.proj.folder, "Props")
+	local i = #props:GetChildren() + 1
+	while props:FindFirstChild(string.format("P%03d", i)) do i += 1 end
+	local folder = U.new("Folder", {Name = string.format("P%03d", i)})
+	folder:SetAttribute("Property", prop)
+	folder:SetAttribute("Kind", kind)
+	for k, v in pairs(attrs or {}) do folder:SetAttribute(k, v) end
+	U.new("ObjectValue", {Name = "Target", Value = target, Parent = folder})
+	folder.Parent = props
+	return folder
+end
+
+-- no animation open yet: make one so a single click is enough
+function Act.ensureProject(baseName)
+	if S.proj then return true end
+	local folder
+	Hist.run("Marrow: new animation", function() folder = Store.create(Store.uniqueName(baseName .. " anim"), nil) end)
+	if folder then Act.openProject(folder) end
+	return S.proj ~= nil
+end
+
+function Act.addItemTrack(target)
+	target = target or Svc.Selection:Get()[1]
+	if not target or not (target:IsA("BasePart") or target:IsA("Model")) then
+		Act.status("Select a part or a model (a sword, a door, a car...) first, then Add > Item", true)
+		return
+	end
+	if S.rig and (target == S.rig or target:IsDescendantOf(S.rig)) then
+		Act.status("That is part of the rig: pose it in POSE mode, or use Add > Hold item in hand", true)
+		return
+	end
+	if not Act.ensureProject(target.Name) then return end
+	for _, pt in ipairs(S.proj.props) do
+		if pt.isItem and pt.target == target then
+			Act.selectProp(pt.folder)
+			Act.status(target.Name .. " is already on the timeline")
+			return
+		end
+	end
+	local ok, pivot = pcall(Anim.getProp, target, "Pivot")
+	if not ok or typeof(pivot) ~= "CFrame" then
+		Act.status("Can't move " .. target.Name, true)
+		return
+	end
+	local frame = U.round(S.frame)
+	local folder
+	Hist.run("Marrow: add item " .. target.Name, function()
+		-- an animated item must not fall: anchor its parts
+		for _, p in ipairs(target:IsA("BasePart") and {target} or target:GetDescendants()) do
+			if p:IsA("BasePart") then p.Anchored = true end
+		end
+		folder = Store.newPropTrack(target, "Pivot", "CFrame", {IsItem = true})
+		Store.setPropKey({folder = folder}, frame, pivot)
+	end, true)
+	if folder then
+		Act.selectProp(folder)
+		if not S.poseMode then Act.setPoseMode(true) end
+		Act.selectProp(folder)
+		Act.status("Added " .. target.Name .. ". Move the playhead, then turn / move it with the rings and arrows.")
+	end
+end
+
+-- an item was moved with the gizmo
+function Act.commitItem(pt, cf)
+	local frame = U.round(S.frame)
+	if S.autoKey or Act.keyAt(pt.keys, frame) then
+		Hist.run("Marrow: move " .. (pt.target and pt.target.Name or "item"), function() Store.setPropKey(pt, frame, cf) end, true)
+	else
+		Gizmo.place()
+		Act.status("Moved " .. pt.target.Name .. " but not keyed: press K (or turn Auto-key on)")
+	end
+end
+
+-- weld an item to a body part with a Motor6D: it becomes a joint of the rig (tools, weapons) and goes into
+-- the KeyframeSequence with the body
+function Act.weldItem()
+	if not S.proj or not S.rig then
+		Act.status("Add the rig first (Add > Rig)", true)
+		return
+	end
+	local rig = S.rig
+	local body, item
+	for _, o in ipairs(Svc.Selection:Get()) do
+		if o:IsA("BasePart") and o:IsDescendantOf(rig) then
+			body = body or o
+		elseif (o:IsA("BasePart") or o:IsA("Model")) and o ~= rig and not o:IsDescendantOf(rig) then
+			item = item or o
+		end
+	end
+	if not body and S.selJoint and S.jointByName[S.selJoint] then body = S.jointByName[S.selJoint].part1 end
+	if not item then
+		local pt = Draw.selectedProp()
+		if pt and pt.isItem then item = pt.target end
+	end
+	if not body or not item then
+		Act.status("Select the body part (for example Right Arm) and the item: Ctrl+click both in the Explorer", true)
+		return
+	end
+	local handle = item:IsA("BasePart") and item or item.PrimaryPart or item:FindFirstChild("Handle", true)
+		or item:FindFirstChildWhichIsA("BasePart", true)
+	if not handle then
+		Act.status(item.Name .. " has no parts", true)
+		return
+	end
+	Act.stop()
+	Act.setPoseMode(false)
+	S.pending = {}
+	S.propOriginal[item] = nil
+	Rig.unbind()
+	local itemName, bodyName = item.Name, body.Name
+	Hist.run("Marrow: hold " .. itemName, function()
+		for _, pt in ipairs(S.proj.props) do
+			if pt.isItem and pt.target == item then pt.folder.Parent = nil end
+		end
+		for _, p in ipairs(item:IsA("BasePart") and {item} or item:GetDescendants()) do
+			if p:IsA("BasePart") then
+				p.Anchored = false
+				p.Massless = true
+				p.CanCollide = false
+				if p ~= handle then U.new("WeldConstraint", {Name = "MarrowWeld", Part0 = handle, Part1 = p, Parent = p}) end
+			end
+		end
+		item.Parent = rig
+		U.new("Motor6D", {Name = handle.Name, Part0 = body, Part1 = handle, C0 = body.CFrame:ToObjectSpace(handle.CFrame), Parent = body})
+	end)
+	Act.selectJoint(handle.Name)
+	Act.status(("%s now hangs on %s as the joint %s: pose it like a body part. In the game your tool needs the same Motor6D.")
+		:format(itemName, bodyName, handle.Name))
+end
+
+-- ===================================================================================================
+-- effects: particles, light flashes and sounds, keyed on the timeline
+-- ===================================================================================================
+local function seq(a, b) return NumberSequence.new({NumberSequenceKeypoint.new(0, a), NumberSequenceKeypoint.new(1, b)}) end
+local function cseq(a, b) return ColorSequence.new(a, b) end
+local TEX = {
+	fire = "rbxasset://textures/particles/fire_main.dds",
+	smoke = "rbxasset://textures/particles/smoke_main.dds",
+	spark = "rbxasset://textures/particles/sparkles_main.dds",
+}
+
+Act.EMITTERS = {
+	Fire = function() return {Texture = TEX.fire, Color = cseq(Color3.fromRGB(255, 196, 96), Color3.fromRGB(255, 70, 24)),
+		LightEmission = 1, Size = seq(1.4, 0.2), Transparency = seq(0.15, 1), Lifetime = NumberRange.new(0.35, 0.8),
+		Speed = NumberRange.new(3, 6), Rate = 70, SpreadAngle = Vector2.new(12, 12), Acceleration = Vector3.new(0, 5, 0),
+		RotSpeed = NumberRange.new(-90, 90), Rotation = NumberRange.new(0, 360)} end,
+	Smoke = function() return {Texture = TEX.smoke, Color = cseq(Color3.fromRGB(90, 88, 86), Color3.fromRGB(40, 40, 42)),
+		Size = seq(1.2, 4.5), Transparency = seq(0.35, 1), Lifetime = NumberRange.new(1.5, 3), Speed = NumberRange.new(1.5, 3),
+		Rate = 22, SpreadAngle = Vector2.new(20, 20), Acceleration = Vector3.new(0, 1.5, 0), RotSpeed = NumberRange.new(-30, 30),
+		Rotation = NumberRange.new(0, 360)} end,
+	Sparks = function() return {Texture = TEX.spark, Color = cseq(Color3.fromRGB(255, 236, 160), Color3.fromRGB(255, 120, 30)),
+		LightEmission = 1, Size = seq(0.3, 0), Transparency = seq(0, 0.4), Lifetime = NumberRange.new(0.25, 0.6),
+		Speed = NumberRange.new(14, 24), Rate = 0, SpreadAngle = Vector2.new(180, 180), Acceleration = Vector3.new(0, -35, 0)} end,
+	Magic = function() return {Texture = TEX.spark, Color = cseq(Color3.fromRGB(170, 120, 255), Color3.fromRGB(90, 220, 255)),
+		LightEmission = 1, Size = seq(0.55, 0), Transparency = seq(0, 1), Lifetime = NumberRange.new(0.9, 1.6),
+		Speed = NumberRange.new(1, 3), Rate = 35, SpreadAngle = Vector2.new(180, 180), Acceleration = Vector3.new(0, 1, 0)} end,
+	Blood = function() return {Texture = TEX.spark, Color = cseq(Color3.fromRGB(120, 6, 10), Color3.fromRGB(60, 0, 4)),
+		LightEmission = 0, Size = seq(0.35, 0.12), Transparency = seq(0, 0.2), Lifetime = NumberRange.new(0.4, 0.8),
+		Speed = NumberRange.new(8, 15), Rate = 0, SpreadAngle = Vector2.new(45, 45), Acceleration = Vector3.new(0, -45, 0)} end,
+	Explosion = function() return {Texture = TEX.fire, Color = cseq(Color3.fromRGB(255, 230, 150), Color3.fromRGB(255, 60, 10)),
+		LightEmission = 1, Size = seq(2.5, 0.5), Transparency = seq(0, 1), Lifetime = NumberRange.new(0.3, 0.7),
+		Speed = NumberRange.new(14, 26), Rate = 0, SpreadAngle = Vector2.new(180, 180), Drag = 4,
+		RotSpeed = NumberRange.new(-180, 180), Rotation = NumberRange.new(0, 360)} end,
+}
+
+function Act.makeEmitter(parent, name, cfg)
+	local e = Instance.new("ParticleEmitter")
+	e.Name = name
+	for k, v in pairs(cfg) do pcall(function() e[k] = v end) end
+	e.Enabled = false
+	e.Parent = parent
+	return e
+end
+
+-- where an effect goes: the part selected in Studio, else the selected joint's part or item
+function Act.effectTarget()
+	local sel = Svc.Selection:Get()[1]
+	if sel and (sel:IsA("BasePart") or sel:IsA("Attachment")) then return sel end
+	if sel and sel:IsA("Model") then return sel.PrimaryPart or sel:FindFirstChildWhichIsA("BasePart", true) end
+	local j = S.selJoint and S.jointByName[S.selJoint]
+	if j then return j.part1 end
+	local pt = Draw.selectedProp()
+	if pt and pt.isItem and pt.target then
+		return pt.target:IsA("BasePart") and pt.target or pt.target.PrimaryPart or pt.target:FindFirstChildWhichIsA("BasePart", true)
+	end
+	return nil
+end
+
+local function holderFor(target, name)
+	if target:IsA("Attachment") then return target end
+	return U.new("Attachment", {Name = "MarrowFX_" .. name, Parent = target})
+end
+
+-- a held effect: on at the playhead for a while
+local function loopEffect(name, seconds)
+	return function(target, frame)
+		local e = Act.makeEmitter(holderFor(target, name), name, Act.EMITTERS[name]())
+		local f = Store.newPropTrack(e, "Enabled", "boolean")
+		if frame > 0 then Store.setPropKey({folder = f}, 0, false, "Constant", "InOut") end
+		Store.setPropKey({folder = f}, frame, true, "Constant", "InOut")
+		Store.setPropKey({folder = f}, frame + U.round(seconds * S.proj.fps), false, "Constant", "InOut")
+		return f
+	end
+end
+
+-- a burst: the particles fly out once when the playhead passes the key
+local function burstEffect(name, count)
+	return function(target, frame)
+		local e = Act.makeEmitter(holderFor(target, name), name, Act.EMITTERS[name]())
+		local f = Store.newPropTrack(e, "Emit", "emit")
+		Store.setPropKey({folder = f}, frame, count, "Constant", "InOut")
+		return f
+	end
+end
+
+local function lightFlash(target, frame, peak, color)
+	local light = U.new("PointLight", {Name = "MarrowFlash", Brightness = 0, Range = 16, Color = color or Color3.fromRGB(255, 190, 110),
+		Shadows = true, Parent = holderFor(target, "Flash")})
+	local f = Store.newPropTrack(light, "Brightness", "number")
+	if frame > 0 then Store.setPropKey({folder = f}, math.max(0, frame - 1), 0, "Linear", "InOut") end
+	Store.setPropKey({folder = f}, frame, 0, "Quad", "Out")
+	Store.setPropKey({folder = f}, frame + 2, peak, "Quad", "Out")
+	Store.setPropKey({folder = f}, frame + U.round(0.35 * S.proj.fps), 0, "Linear", "InOut")
+	return f
+end
+
+Act.EFFECTS = {
+	{"Fire", "Fire (2 s)", loopEffect("Fire", 2)},
+	{"Smoke", "Smoke (3 s)", loopEffect("Smoke", 3)},
+	{"Magic", "Magic dust (2 s)", loopEffect("Magic", 2)},
+	{"Sparks", "Sparks (burst)", burstEffect("Sparks", 40)},
+	{"Blood", "Blood splash (burst)", burstEffect("Blood", 30)},
+	{"Explosion", "Explosion (burst + smoke + flash)", function(target, frame)
+		local first = burstEffect("Explosion", 60)(target, frame)
+		burstEffect("Smoke", 25)(target, frame)
+		lightFlash(target, frame, 10)
+		return first
+	end},
+	{"Flash", "Light flash", function(target, frame) return lightFlash(target, frame, 8) end},
+}
+
+-- a key past the end makes the animation longer (call inside Hist.run)
+function Act.fitLengthToKeys()
+	local last = S.proj.length
+	for _, d in ipairs(S.proj.folder:GetDescendants()) do
+		local f = d:GetAttribute("F")
+		if f and f > last then last = f end
+	end
+	if last > S.proj.length then Store.setAttr("Length", last) end
+end
+
+function Act.addEffect(entry)
+	local target = Act.effectTarget()
+	if not target then
+		Act.status("Select a part first (in the Explorer, or click a body part / item in POSE), then pick an effect", true)
+		return
+	end
+	if not Act.ensureProject(target.Name) then return end
+	local frame = U.round(S.frame)
+	local made
+	Hist.run("Marrow: effect " .. entry[1], function()
+		made = entry[3](target, frame)
+		Act.fitLengthToKeys()
+	end, true)
+	if made then
+		Act.selectProp(made)
+		Act.status(entry[2] .. " on " .. target.Name .. " at frame " .. frame .. ". Drag its keys to retime it; Space plays it.")
+	end
+end
+
+function Act.addSoundDialog()
+	local target = Act.effectTarget()
+	if not target then
+		Act.status("Select a part first, then Effects > Sound", true)
+		return
+	end
+	UI.dialog("Sound", "Paste the sound ID (from the Toolbox or Creator Store). It plays when the playhead reaches the key.",
+		{{label = "Sound ID", default = ""}, {label = "Volume", default = "0.8"}}, function(v)
+			local id = tostring(v[1] or ""):match("%d%d%d+")
+			if not id then
+				Act.status("That doesn't look like a sound ID", true)
+				return
+			end
+			if not Act.ensureProject(target.Name) then return end
+			local frame = U.round(S.frame)
+			local made
+			Hist.run("Marrow: sound", function()
+				local parent = target
+				local sound = U.new("Sound", {Name = "MarrowSound", SoundId = "rbxassetid://" .. id,
+					Volume = U.clamp(tonumber(v[2]) or 0.8, 0, 10), Parent = parent})
+				made = Store.newPropTrack(sound, "Play", "play")
+				Store.setPropKey({folder = made}, frame, true, "Constant", "InOut")
+			end, true)
+			if made then Act.selectProp(made) end
+		end, "Add")
+end
+
+-- the target of an action track created from the property menu
+function Act.addActionTrack(target, kind)
+	if not Act.ensureProject(target.Name) then return end
+	for _, pt in ipairs(S.proj.props) do
+		if pt.target == target and pt.kind == kind then
+			Act.selectProp(pt.folder)
+			return
+		end
+	end
+	local frame = U.round(S.frame)
+	local made
+	Hist.run("Marrow: add " .. kind, function()
+		made = Store.newPropTrack(target, kind == "emit" and "Emit" or "Play", kind)
+		Store.setPropKey({folder = made}, frame, kind == "emit" and 20 or true, "Constant", "InOut")
+	end, true)
+	if made then Act.selectProp(made) end
+end
+
+-- ===================================================================================================
+-- the menu bar
+-- ===================================================================================================
+function Act.fileMenu(b)
+	local has = S.proj ~= nil
+	UI.menuAt(b, {
+		{text = "New animation...", fn = Act.newProject},
+		{text = "Open...", fn = function() Act.projectMenu(b) end},
+		{text = "Duplicate", disabled = not has, fn = Act.duplicateProject},
+		{text = "Rename...", disabled = not has, fn = Act.renameDialog},
+		{text = "Delete...", disabled = not has, fn = Act.deleteProject},
+		{sep = true},
+		{text = "Import...", fn = function() Act.importMenu(b) end},
+		{text = "Export KeyframeSequence", disabled = not has, fn = IO.exportKeyframeSequence},
+		{text = "Export cutscene (plays in game, no upload)", disabled = not has, fn = IO.exportCutscene},
+		{sep = true},
+		{text = "Publish to Roblox", disabled = not has, fn = IO.publish},
+		{sep = true},
+		{text = "Close animation", disabled = not has, fn = function() Act.openProject(nil) end},
+	}, 300)
+end
+
+function Act.editMenu(b)
+	local has = S.proj ~= nil
+	local rig = S.rig ~= nil
+	UI.menuAt(b, {
+		{text = "Undo  (Ctrl+Z)", fn = function() pcall(function() Svc.History:Undo() end) end},
+		{text = "Redo  (Ctrl+Y)", fn = function() pcall(function() Svc.History:Redo() end) end},
+		{sep = true},
+		{text = "Key selected  (K)", disabled = not has, fn = Act.keySelected},
+		{text = "Key every joint  (Shift+K)", disabled = not rig, fn = Act.keyAll},
+		{text = "Copy keys  (Ctrl+C)", disabled = not has, fn = Act.copyKeys},
+		{text = "Paste keys  (Ctrl+V)", disabled = not has, fn = function() Act.pasteKeys(U.round(S.frame)) end},
+		{text = "Delete keys  (Delete)", disabled = not has, fn = Act.deleteSelected},
+		{text = "Select every key  (Ctrl+A)", disabled = not has, fn = Act.selectAll},
+		{sep = true},
+		{text = "Copy pose", disabled = not rig, fn = Act.copyPose},
+		{text = "Paste pose", disabled = not rig, fn = function() Act.pastePose(false) end},
+		{text = "Paste pose mirrored", disabled = not rig, fn = function() Act.pastePose(true) end},
+		{text = "Mirror pose  (M)", disabled = not rig, fn = Act.mirrorPose},
+		{text = "Reset joint to rest", disabled = not rig, fn = Act.resetJoint},
+		{text = "Save pose to the library...", disabled = not rig, fn = Act.savePoseDialog},
+		{text = "Apply pose from the library...", disabled = not rig, fn = function() Act.poseLibraryMenu(b) end},
+		{sep = true},
+		{text = "Reverse keys", disabled = not has, fn = Act.reverseKeys},
+		{text = "Stretch keys...", disabled = not has, fn = Act.stretchDialog},
+		{text = "Shift keys...", disabled = not has, fn = Act.shiftDialog},
+		{text = "Insert frames at the playhead...", disabled = not has, fn = function() Act.timeDialog(true) end},
+		{text = "Remove frames at the playhead...", disabled = not has, fn = function() Act.timeDialog(false) end},
+		{text = "Close the loop", disabled = not has, fn = Act.closeLoop},
+		{text = "Simplify keys", disabled = not has, fn = Act.simplifyKeys},
+		{text = "Delete every key...", disabled = not has, fn = Act.clearAll},
+	}, 290)
+end
+
+function Act.viewMenu(b)
+	UI.menuAt(b, {
+		{text = "Onion skin  (O)", checked = S.onion, fn = Act.toggleOnion},
+		{text = "Motion path  (T)", checked = S.path, fn = Act.togglePath},
+		{text = "Look through the camera track", checked = S.camPreview, fn = Act.toggleCamera},
+		{text = "World axes  (L)", checked = S.space == "world", fn = Act.toggleSpace},
+		{text = "Snapping...", fn = function() Act.snapMenu(b) end},
+		{text = "Loop the preview", checked = S.loopPlay, fn = Act.toggleLoopPlay},
+		{text = "Preview speed...", fn = function() Act.speedMenu(b) end},
+		{sep = true},
+		{text = "Fit the timeline  (F)", disabled = not S.proj, fn = function() Act.fitView() Draw.all() end},
+		{text = "Release the rig (rest pose)", disabled = not S.rig, fn = Act.releaseRig},
+	}, 270)
+end
+
+function Act.addMenu(b)
+	local has = S.proj ~= nil
+	UI.menuAt(b, {
+		{title = "SELECT IT IN THE VIEWPORT OR EXPLORER FIRST"},
+		{text = "Rig  (a character or anything with Motor6D)", fn = Act.attachSelected},
+		{text = "Item  (any part or model: sword, door, car...)", fn = function() Act.addItemTrack() end},
+		{text = "Hold item in hand  (body part + item)", disabled = not S.rig, fn = Act.weldItem},
+		{text = "Property of the selected object...", disabled = not has, fn = Act.addPropertyMenu},
+		{sep = true},
+		{text = "Camera", disabled = not has, fn = Act.addCameraTracks},
+		{text = "Event at the playhead", disabled = not has, fn = function() Act.addMarker(U.round(S.frame)) end},
+	}, 340)
+end
+
+function Act.effectsMenu(b)
+	local items = {{title = "ON THE SELECTED PART, AT THE PLAYHEAD"}}
+	for _, entry in ipairs(Act.EFFECTS) do
+		table.insert(items, {text = entry[2], fn = function() Act.addEffect(entry) end})
+	end
+	table.insert(items, {text = "Sound...", fn = Act.addSoundDialog})
+	UI.menuAt(b, items, 300)
+end
+
+-- ===================================================================================================
 -- start
 -- ===================================================================================================
 -- play tests load plugins too: the animator only runs while editing
@@ -4659,9 +5225,10 @@ UI.toolbar = plugin:CreateToolbar("Marrow Animator")
 UI.openButton = UI.toolbar:CreateButton("MarrowAnimatorOpen",
 	"Marrow Animator: keyframe animation for rigs, properties and the camera", ICON, "Marrow Animator")
 UI.openButton.ClickableWhenViewportHidden = true
-UI.widget = plugin:CreateDockWidgetPluginGui("MarrowAnimatorWindow",
-	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Bottom, false, false, 1180, 420, 760, 280))
-UI.widget.Title = "Marrow Animator " .. VERSION
+-- its own floating window, like a separate program (it can still be docked by dragging its title)
+UI.widget = plugin:CreateDockWidgetPluginGui("MarrowAnimatorMain",
+	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 1200, 560, 820, 320))
+UI.widget.Title = "Marrow Animator"
 UI.widget.Name = "MarrowAnimator"
 UI.widget.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 UI.build(UI.widget)
@@ -4868,16 +5435,21 @@ end)))
 -- ===== playback =====
 function Act.tick(dt)
 	local length = S.proj.length
+	local before = S.frame
 	local f = S.frame + dt * S.proj.fps * S.speed
 	if f >= length then
+		Anim.fireActions(before, length)
 		if S.loopPlay and length > 0 then
 			f = f % length
+			Anim.fireActions(-1, f)
 		else
 			S.frame = length
 			Anim.apply(length)
 			Act.stop()
 			return
 		end
+	else
+		Anim.fireActions(before, f)
 	end
 	S.frame = f
 	Anim.apply(f)
