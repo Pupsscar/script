@@ -1,5 +1,5 @@
 --[[
-    Aurora UI · Drawing API — optimized v1.6
+    Aurora UI · Drawing API — optimized v1.7
     RightShift - toggle, I - No Recoil.
 ]]
 
@@ -78,7 +78,6 @@ end
 
 --==================== caches + helpers ====================--
 
-local TextObjs = setmetatable({}, {__mode = "k"})
 local OutlineText = setmetatable({}, {__mode = "k"})
 local VisCache = setmetatable({}, {__mode = "k"})
 local TrCache = setmetatable({}, {__mode = "k"})
@@ -90,9 +89,8 @@ local function new(class, props)
     local o = Drawing.new(class)
     o.Visible = false
     for k, v in pairs(props or {}) do o[k] = v end
-    if class == "Text" then
-        TextObjs[o] = true
-        if props and props.Outline then OutlineText[o] = true end
+    if class == "Text" and props and props.Outline then
+        OutlineText[o] = true
     end
     Objects[#Objects + 1] = o
     return o
@@ -151,7 +149,7 @@ end
 local function accentAt(p)
     p = p or 0
     if accentFrame ~= frameCounter then
-        accentCache = {}
+        table.clear(accentCache)
         accentFrame = frameCounter
     end
     local k = math.floor(p * 10 + 0.5) / 10
@@ -227,6 +225,13 @@ function RoundRect.new(z)
     return self
 end
 
+local function setCorner(c, px, py, r, color, a)
+    c.Position = Vector2.new(px, py)
+    c.Radius = r
+    c.Color = color
+    show(c, a)
+end
+
 function RoundRect:set(x, y, w, h, r, color, alpha)
     x = tonumber(x) or 0
     y = tonumber(y) or 0
@@ -250,9 +255,10 @@ function RoundRect:set(x, y, w, h, r, color, alpha)
     L.x, L.y, L.w, L.h, L.r, L.a = x, y, w, h, r, alpha
     L.cr, L.cg, L.cb = color.R, color.G, color.B
 
-    if w <= 0 or h <= 0 then
+    local c = self.c
+    if w <= 0 or h <= 0 or alpha <= 0 then
         show(self.hr, 0); show(self.vr, 0)
-        for _, c in ipairs(self.c) do show(c, 0) end
+        show(c[1], 0); show(c[2], 0); show(c[3], 0); show(c[4], 0)
         return
     end
 
@@ -270,16 +276,12 @@ function RoundRect:set(x, y, w, h, r, color, alpha)
     show(self.hr, alpha)
     show(self.vr, alpha)
 
-    local pts = {
-        Vector2.new(x + r, y + r), Vector2.new(x + w - r, y + r),
-        Vector2.new(x + r, y + h - r), Vector2.new(x + w - r, y + h - r),
-    }
-    for i, c in ipairs(self.c) do
-        c.Position = pts[i]
-        c.Radius = r
-        c.Color = color
-        show(c, r > 0 and alpha or 0)
-    end
+    local ca = r > 0 and alpha or 0
+    local x1, y1, x2, y2 = x + r, y + r, x + w - r, y + h - r
+    setCorner(c[1], x1, y1, r, color, ca)
+    setCorner(c[2], x2, y1, r, color, ca)
+    setCorner(c[3], x1, y2, r, color, ca)
+    setCorner(c[4], x2, y2, r, color, ca)
 end
 
 function RoundRect:destroy()
@@ -368,7 +370,7 @@ V.logoA = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6})
 V.logoB = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6})
 V.logoCore = new("Circle", {Filled = true, NumSides = 12, ZIndex = 7})
 V.title = new("Text", {Text = "Aurora", Size = 19, Font = FONT, ZIndex = 6})
-V.subtitle = new("Text", {Text = "v1.6  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6})
+V.subtitle = new("Text", {Text = "v1.7  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6})
 V.sideDiv = Gradient.new(12, 5)
 V.indicator = RoundRect.new(4)
 V.indicatorBar = new("Square", {Filled = true, Thickness = 1, ZIndex = 6})
@@ -417,6 +419,7 @@ function TabMT:Toggle(o)
     el.track = RoundRect.new(6)
     el.glow = new("Circle", {Filled = true, NumSides = 14, ZIndex = 7})
     el.knob = new("Circle", {Filled = true, NumSides = 14, ZIndex = 8})
+    el.knob.Color = Color3.new(1, 1, 1)
 
     function el:Set(v)
         self.state = v and true or false
@@ -447,7 +450,6 @@ function TabMT:Toggle(o)
         local kp = Vector2.new(tx + th / 2 + (tw - th) * self.anim, ty + th / 2)
         self.knob.Position = kp
         self.knob.Radius = 7 + self.hover * 0.8
-        self.knob.Color = Color3.new(1, 1, 1)
         show(self.knob, a)
 
         self.glow.Position = kp
@@ -463,6 +465,7 @@ end
 function TabMT:Slider(o)
     local min, max, step = o.Min or 0, o.Max or 100, o.Step or 1
     local dec = step < 1 and math.max(0, math.ceil(-math.log10(step) - 1e-9)) or 0
+    local fmt = "%." .. dec .. "f"
     local el = {h = 58, value = math.clamp(o.Default or min, min, max), hover = 0, dragging = false, cb = o.Callback}
     el.anim = (el.value - min) / (max - min)
     el.card = RoundRect.new(5)
@@ -473,6 +476,10 @@ function TabMT:Slider(o)
     el.fill = Gradient.new(12, 7)
     el.knobGlow = new("Circle", {Filled = true, NumSides = 16, ZIndex = 8})
     el.knob = new("Circle", {Filled = true, NumSides = 16, ZIndex = 9})
+    el.knob.Color = Color3.new(1, 1, 1)
+    el.label.Color = Theme.Text
+    -- одна функция на элемент вместо новой замыкалки каждый кадр
+    el.fillFn = function(p) return accentAt(p * el.anim) end
 
     function el:Set(v)
         v = math.clamp(math.floor((v - min) / step + 0.5) * step + min, min, max)
@@ -501,10 +508,12 @@ function TabMT:Slider(o)
         local fill = cLerp(Theme.Element, Theme.ElementHover, self.hover)
         self.card:set(x, y, w, self.h, 8, fill, a)
         self.label.Position = Vector2.new(x + 14, y + 10)
-        self.label.Color = Theme.Text
         show(self.label, a)
 
-        self.valueText.Text = string.format("%." .. dec .. "f", self.value) .. (o.Suffix or "")
+        if self.shownValue ~= self.value then
+            self.shownValue = self.value
+            self.valueText.Text = string.format(fmt, self.value) .. (o.Suffix or "")
+        end
         local vb = bounds(self.valueText)
         self.valueText.Position = Vector2.new(x + w - 14 - vb.X, y + 11)
         self.valueText.Color = cLerp(Theme.SubText, accentAt(0.6), self.hover)
@@ -519,14 +528,11 @@ function TabMT:Slider(o)
         self.cap.Radius = th / 2
         self.cap.Color = accentAt(0)
         show(self.cap, a)
-        self.fill:set(tx + th / 2, ty, math.max(0, fw - th / 2), th, a, function(p)
-            return accentAt(p * self.anim)
-        end)
+        self.fill:set(tx + th / 2, ty, math.max(0, fw - th / 2), th, a, self.fillFn)
 
         local kp = Vector2.new(tx + fw, ty + th / 2)
         self.knob.Position = kp
         self.knob.Radius = 6 + self.hover * 1.5
-        self.knob.Color = Color3.new(1, 1, 1)
         show(self.knob, a)
 
         self.knobGlow.Position = kp
@@ -600,13 +606,18 @@ function TabMT:Swatches(o)
     local el = {h = 50, sel = o.Default or 1, hover = 0, cb = o.Callback, sw = {}}
     el.card = RoundRect.new(5)
     el.label = new("Text", {Text = o.Name, Size = 15, Font = FONT, ZIndex = 6})
+    el.label.Color = Theme.Text
     el.ring = new("Circle", {Filled = false, Thickness = 2, NumSides = 20, ZIndex = 8})
+    el.ring.Color = Color3.new(1, 1, 1)
     for i, p in ipairs(presets) do
-        el.sw[i] = {
+        local s = {
             outer = new("Circle", {Filled = true, NumSides = 18, ZIndex = 6}),
             inner = new("Circle", {Filled = true, NumSides = 14, ZIndex = 7}),
             a = p[1], b = p[2], hover = 0, pos = Vector2.new(),
         }
+        s.outer.Color = s.a
+        s.inner.Color = s.b
+        el.sw[i] = s
     end
 
     function el:press(m)
@@ -626,7 +637,6 @@ function TabMT:Swatches(o)
         self.card:set(x, y, w, self.h, 8, fill, a)
         local b = bounds(self.label)
         self.label.Position = Vector2.new(x + 14, y + (self.h - b.Y) / 2)
-        self.label.Color = Theme.Text
         show(self.label, a)
 
         local n = #self.sw
@@ -638,11 +648,9 @@ function TabMT:Swatches(o)
             local sy = math.sin(clock * 2 + i) * 2
             s.outer.Position = s.pos
             s.outer.Radius = 9 + s.hover * 1.5
-            s.outer.Color = s.a
             show(s.outer, a)
             s.inner.Position = Vector2.new(s.pos.X + sx, s.pos.Y + sy)
             s.inner.Radius = 5 + s.hover
-            s.inner.Color = s.b
             show(s.inner, a)
         end
 
@@ -650,7 +658,6 @@ function TabMT:Swatches(o)
         self.ringPos = self.ringPos and vLerp(self.ringPos, target, 1 - math.exp(-16 * dt)) or target
         self.ring.Position = self.ringPos
         self.ring.Radius = 13.5 + math.sin(clock * 4) * 0.6
-        self.ring.Color = Color3.new(1, 1, 1)
         show(self.ring, a, 0.9)
     end
 
@@ -667,8 +674,8 @@ function Win:Notify(title, text, dur)
     n.bg = RoundRect.new(20)
     n.bar = new("Square", {Filled = true, Thickness = 1, ZIndex = 21})
     n.dot = new("Circle", {Filled = true, NumSides = 12, ZIndex = 22})
-    n.title = new("Text", {Text = title, Size = 15, Font = FONT, ZIndex = 22})
-    n.text = new("Text", {Text = text, Size = 13, Font = FONT, ZIndex = 22})
+    n.title = new("Text", {Text = title, Size = 15, Font = FONT, ZIndex = 22, Color = Theme.Text})
+    n.text = new("Text", {Text = text, Size = 13, Font = FONT, ZIndex = 22, Color = Theme.SubText})
     n.prog = Gradient.new(12, 22)
     table.insert(Notifs, 1, n)
     return n
@@ -680,6 +687,7 @@ local function destroyNotif(n)
 end
 
 local function updateNotifs(dt)
+    if #Notifs == 0 then return end
     for i = #Notifs, 1, -1 do
         local n = Notifs[i]
         n.t += dt
@@ -708,13 +716,11 @@ local function updateNotifs(dt)
         n.dot.Color = accentAt(0.5)
         show(n.dot, e)
         n.title.Position = Vector2.new(x + 32, y + 12)
-        n.title.Color = Theme.Text
         show(n.title, e)
         n.text.Position = Vector2.new(x + 16, y + 34)
-        n.text.Color = Theme.SubText
         show(n.text, e)
         local left = math.clamp(1 - n.t / n.dur, 0, 1)
-        n.prog:set(x + 12, y + nh - 7, (nw - 24) * left, 2, e, function(p) return accentAt(p) end)
+        n.prog:set(x + 12, y + nh - 7, (nw - 24) * left, 2, e, accentAt)
     end
 end
 
@@ -730,6 +736,7 @@ local Flags = {
 }
 
 local Offsets = { Player = { AccountAge = 0, UserId = 0 }, BasePart = {} }
+local OffsetsLoaded = false
 
 local function LoadOffsets()
     local ok, resp = pcall(function()
@@ -745,6 +752,7 @@ local function LoadOffsets()
     if ok2 and decoded and decoded.Offsets then
         Offsets = decoded.Offsets
         if not Offsets.Player then Offsets.Player = { AccountAge = 0, UserId = 0 } end
+        OffsetsLoaded = true
     end
 end
 LoadOffsets()
@@ -771,10 +779,40 @@ local ModeratorIDs = {
     [47983795] = "Co-Founder", [16681869] = "Founder",
 }
 
+local RoleRank = {
+    ["Founder"] = 1, ["Co-Founder"] = 2, ["Lead Developer"] = 3,
+    ["Contribution"] = 4, ["Game Moderator"] = 5,
+}
+
+--==================== player cache ====================--
+-- список игроков без LocalPlayer, обновляется раз в 0.5 сек вместо GetPlayers() каждый кадр
+
+local PlayerList = {}
+local PlayerListT = -1
+
+local function getPlayers()
+    local now = tick()
+    if now - PlayerListT >= 0.5 then
+        PlayerListT = now
+        table.clear(PlayerList)
+        for _, P in ipairs(Players:GetPlayers()) do
+            if P ~= LocalPlayer then
+                PlayerList[#PlayerList + 1] = P
+            end
+        end
+    end
+    return PlayerList
+end
+
+local function getAliveHead(P)
+    local Char = P and P.Character
+    if not Char then return nil end
+    local Hum = Char:FindFirstChild("Humanoid")
+    if not Hum or Hum.Health <= 0 then return nil end
+    return Char:FindFirstChild("Head")
+end
+
 --==================== memoized memory reads ====================--
--- UserId никогда не меняется у игрока → кэшируем навсегда
--- AccountAge меняется раз в сутки → кэшируем на 60 сек
--- Role по UserId → кэшируем навсегда
 
 local UserIdCache = setmetatable({}, {__mode = "k"})
 local RoleCache = setmetatable({}, {__mode = "k"})
@@ -799,21 +837,24 @@ local function GetRole(P)
         return cached or nil
     end
     local id = GetUserId(P)
-    local role = (id and ModeratorIDs[id]) or false
+    -- кэшируем только когда id реально прочитан, иначе попробуем в следующий раз
+    if not id then return nil end
+    local role = ModeratorIDs[id] or false
     RoleCache[P] = role
     return role or nil
 end
 
 local function GetAge(P)
     local c = AgeCache[P]
-    if c and c.t and (tick() - c.t) < 60 then
+    local now = tick()
+    if c and (now - c.t) < 60 then
         return c.v
     end
     local ok, v = pcall(function()
         return memory_read("int", P.Address + Offsets.Player.AccountAge)
     end)
     if ok and type(v) == "number" then
-        AgeCache[P] = {v = v, t = tick()}
+        if c then c.v, c.t = v, now else AgeCache[P] = {v = v, t = now} end
         return v
     end
     return nil
@@ -833,11 +874,29 @@ local function ApplyRecoil(Value)
     end
 end
 
+-- слайдер больше не дёргает getgc на каждый шаг, применяем не чаще раза в 0.25 сек
+local RecoilQueued, RecoilLastT = nil, 0
+
+local function QueueRecoil(v)
+    RecoilQueued = v
+end
+
+local function FlushRecoil()
+    if RecoilQueued == nil then return end
+    local now = tick()
+    if now - RecoilLastT < 0.25 then return end
+    RecoilLastT = now
+    local v = RecoilQueued
+    RecoilQueued = nil
+    ApplyRecoil(v)
+end
+
 local RecoilToggle
 local function SetRecoil(On)
     Flags.RecoilEnabled = On and true or false
+    RecoilQueued = nil
     if On then ApplyRecoil(Flags.RecoilValue) else ApplyRecoil(1) end
-    if RecoilToggle then RecoilToggle.state = On end
+    if RecoilToggle then RecoilToggle.state = Flags.RecoilEnabled end
 end
 
 --==================== inventory ====================--
@@ -850,16 +909,16 @@ local BoxRounding = 10
 local ImageCache = {}
 local ImageBaseUrl = "https://raw.githubusercontent.com/sigma4skin/matcha-fallen/main/armor_images/"
 local SlotCache = {}
-local SlotCacheDirty = false
 local ArmorViewerTarget
 local ArmorLastUpdate = 0
 local ARMOR_INTERVAL = 3
+local slotsHidden = true
 
 local SlotDrawings = {}
 for i = 1, BoxCount do
-    local Bg = new("Square", {Filled = true, Transparency = 0.65, Color = Theme.Panel, Corner = BoxRounding, ZIndex = 4})
+    local Bg = new("Square", {Filled = true, Color = Theme.Panel, Corner = BoxRounding, ZIndex = 4})
     local Img = new("Image", {ZIndex = 5})
-    SlotDrawings[i] = { Bg = Bg, Img = Img, LastIcon = nil }
+    SlotDrawings[i] = { Bg = Bg, Img = Img, LastIcon = nil, lastX = nil, lastY = nil }
 end
 
 local function GetImage(ArmorId)
@@ -867,17 +926,15 @@ local function GetImage(ArmorId)
     local Cached = ImageCache[ArmorId]
     if Cached ~= nil then return Cached or nil end
     ImageCache[ArmorId] = false
-    local Url = ImageBaseUrl .. ArmorId .. ".png"
     task.spawn(function()
-        local Ok, Data = pcall(function() return game:HttpGet(Url) end)
-        if not Ok or not Data then ImageCache[ArmorId] = false; return end
-        ImageCache[ArmorId] = Data
+        local Ok, Data = pcall(function() return game:HttpGet(ImageBaseUrl .. ArmorId .. ".png") end)
+        ImageCache[ArmorId] = (Ok and Data) or false
     end)
     return nil
 end
 
 local function RebuildSlotCache(Char)
-    SlotCache = {}
+    table.clear(SlotCache)
     if not Char then return end
     local Seen = {}
     local Idx = 1
@@ -893,133 +950,57 @@ local function RebuildSlotCache(Char)
 end
 
 local function UpdateSlotCacheImages()
-    local changed = false
     for _, Slot in SlotCache do
         if Slot and not Slot.Icon then
             local Img = ImageCache[Slot.ArmorId]
-            if Img then Slot.Icon = Img; changed = true end
+            if Img then Slot.Icon = Img end
         end
     end
-    return changed
 end
 
 local function HideAllSlots()
+    if slotsHidden then return end
+    slotsHidden = true
     for i = 1, BoxCount do
-        SlotDrawings[i].Bg.Visible = false
-        SlotDrawings[i].Img.Visible = false
-        SlotDrawings[i].LastIcon = nil
+        local D = SlotDrawings[i]
+        show(D.Bg, 0)
+        show(D.Img, 0)
+        D.LastIcon = nil
     end
 end
 
--- FindClosestTarget с кэшем на 0.3 сек
-local FindTargetCache = {t = 0, obj = nil}
+-- возвращает Player (а не новую таблицу), чтобы сравнение цели работало
+local TargetCache = {t = 0, p = nil}
 
 local function FindClosestTarget()
     local now = tick()
-    if FindTargetCache.obj and (now - FindTargetCache.t) < 0.3 then
-        local c = FindTargetCache.obj.Character
-        if c then
-            local h = c:FindFirstChild("Humanoid")
-            if h and h.Health > 0 then
-                return FindTargetCache.obj
+    local cp = TargetCache.p
+    if cp and (now - TargetCache.t) < 0.3 and getAliveHead(cp) then
+        return cp
+    end
+
+    local MousePos = getMouse()
+    local mx, my = MousePos.X, MousePos.Y
+    local Closest, Best = nil, math.huge
+    for _, P in ipairs(getPlayers()) do
+        local Head = getAliveHead(P)
+        if Head then
+            local Screen, OnScreen = WorldToScreen(Head.Position)
+            if OnScreen and Screen then
+                local dx = (tonumber(Screen.X) or 0) - mx
+                local dy = (tonumber(Screen.Y) or 0) - my
+                local d = dx * dx + dy * dy
+                if d < Best then
+                    Best = d
+                    Closest = P
+                end
             end
         end
-        FindTargetCache.obj = nil
     end
 
-    local Closest, ClosestDist = nil, math.huge
-    if not Camera then return nil end
-    local MousePos = getMouse()
-    for _, P in ipairs(Players:GetPlayers()) do
-        if P == LocalPlayer then continue end
-        local Char = P.Character
-        if not Char then continue end
-        local Head = Char:FindFirstChild("Head")
-        if not Head then continue end
-        local Hum = Char:FindFirstChild("Humanoid")
-        if not Hum or Hum.Health <= 0 then continue end
-        local Screen, OnScreen = WorldToScreen(Head.Position)
-        if not OnScreen or not Screen then continue end
-        local sx = tonumber(Screen.X) or 0
-        local sy = tonumber(Screen.Y) or 0
-        local dx = sx - MousePos.X
-        local dy = sy - MousePos.Y
-        local Dist = math.sqrt(dx * dx + dy * dy)
-        if Dist < ClosestDist then
-            ClosestDist = Dist
-            Closest = { Character = Char }
-        end
-    end
-
-    FindTargetCache.obj = Closest
-    FindTargetCache.t = now
+    TargetCache.p = Closest
+    TargetCache.t = now
     return Closest
-end
-
---==================== HUD ====================--
-
-local HudPool = { objs = {}, count = 0, lastCount = 0 }
-
-local function newHudObj(class, init)
-    local o = Drawing.new(class)
-    for k, v in pairs(init or {}) do o[k] = v end
-    table.insert(HudPool.objs, o)
-    return o
-end
-
-local function hudReset()
-    for i = 1, HudPool.lastCount do
-        if HudPool.objs[i] then HudPool.objs[i].Visible = false end
-    end
-    HudPool.count = 0
-end
-
-local function hudFinalize()
-    HudPool.lastCount = HudPool.count
-end
-
-local function hudSq()
-    HudPool.count = HudPool.count + 1
-    local o = HudPool.objs[HudPool.count]
-    if not o then
-        o = newHudObj("Square", { Filled = true })
-        HudPool.objs[HudPool.count] = o
-    end
-    o.Visible = true
-    return o
-end
-
-local function hudTx()
-    HudPool.count = HudPool.count + 1
-    local o = HudPool.objs[HudPool.count]
-    if not o then
-        o = newHudObj("Text", { Font = FONT })
-        HudPool.objs[HudPool.count] = o
-    end
-    o.Visible = true
-    return o
-end
-
-local function hudLn()
-    HudPool.count = HudPool.count + 1
-    local o = HudPool.objs[HudPool.count]
-    if not o then
-        o = newHudObj("Line")
-        HudPool.objs[HudPool.count] = o
-    end
-    o.Visible = true
-    return o
-end
-
-local function hudCi()
-    HudPool.count = HudPool.count + 1
-    local o = HudPool.objs[HudPool.count]
-    if not o then
-        o = newHudObj("Circle", { Filled = true, NumSides = 16 })
-        HudPool.objs[HudPool.count] = o
-    end
-    o.Visible = true
-    return o
 end
 
 local function roleColor(Role)
@@ -1030,320 +1011,411 @@ local function roleColor(Role)
     return Color3.fromRGB(150, 130, 255)
 end
 
+--==================== ADMIN PANEL ====================--
+-- постоянные объекты, без пересоздания/скрытия каждый кадр -> никакого мигания
+
+local AP = {
+    alpha = 0, h = 0, list = {}, scanT = -1, rows = {},
+    hidden = true, empty = 0, count = -1,
+    W = 250, HEADH = 44, ROWH = 38,
+}
+AP.shadow = RoundRect.new(97)
+AP.border = RoundRect.new(98)
+AP.bg = RoundRect.new(99)
+AP.head = RoundRect.new(100)
+AP.headFix = new("Square", {Filled = true, Thickness = 1, ZIndex = 100})
+AP.line = Gradient.new(20, 101)
+AP.liveGlow = new("Circle", {Filled = true, NumSides = 18, ZIndex = 101})
+AP.live = new("Circle", {Filled = true, NumSides = 14, ZIndex = 102})
+AP.title = new("Text", {Text = "ACTIVE ADMINS", Size = 14, Font = FONT, ZIndex = 102, Color = Theme.Text})
+AP.pill = RoundRect.new(101)
+AP.countText = new("Text", {Text = "0", Size = 13, Font = FONT, ZIndex = 102})
+AP.emptyText = new("Text", {Text = "No admins online", Size = 13, Font = FONT, ZIndex = 102, Color = Theme.SubText})
+
+local function getAdminRow(i)
+    local r = AP.rows[i]
+    if r then return r end
+    r = {
+        anim = 0, hidden = true,
+        sep = new("Line", {Thickness = 1, ZIndex = 101, Color = Theme.Stroke}),
+        glow = new("Circle", {Filled = true, NumSides = 16, ZIndex = 101}),
+        dot = new("Circle", {Filled = true, NumSides = 12, ZIndex = 102}),
+        role = new("Text", {Text = "", Size = 12, Font = FONT, ZIndex = 102}),
+        name = new("Text", {Text = "", Size = 14, Font = FONT, ZIndex = 102, Color = Theme.Text}),
+    }
+    AP.rows[i] = r
+    return r
+end
+
+local function hideAdminRow(r)
+    if r.hidden then return end
+    r.hidden = true
+    show(r.sep, 0); show(r.glow, 0); show(r.dot, 0); show(r.role, 0); show(r.name, 0)
+end
+
+local function hideAdminPanel()
+    AP.shadow:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    AP.border:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    AP.bg:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    AP.head:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    AP.pill:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    AP.line:set(0, 0, 0, 0, 0, accentAt)
+    show(AP.headFix, 0); show(AP.liveGlow, 0); show(AP.live, 0)
+    show(AP.title, 0); show(AP.countText, 0); show(AP.emptyText, 0)
+    for _, r in ipairs(AP.rows) do
+        r.anim = 0
+        hideAdminRow(r)
+    end
+end
+
+local function adminSort(a, b)
+    if a.rank ~= b.rank then return a.rank < b.rank end
+    return a.name < b.name
+end
+
+local function scanAdmins()
+    local list = AP.list
+    table.clear(list)
+    for _, P in ipairs(getPlayers()) do
+        local role = GetRole(P)
+        if role then
+            list[#list + 1] = {name = P.Name, role = role, rank = RoleRank[role] or 9}
+        end
+    end
+    table.sort(list, adminSort)
+end
+
+local SHADOW_COL = Color3.new(0, 0, 0)
+
+local function renderAdminPanel(dt)
+    local on = Flags.ShowAdmins
+    AP.alpha = damp(AP.alpha, on and 1 or 0, 10, dt)
+    if not on and AP.alpha <= 0 then
+        if not AP.hidden then
+            AP.hidden = true
+            AP.h = 0
+            hideAdminPanel()
+        end
+        return
+    end
+    AP.hidden = false
+
+    local now = tick()
+    if on and now - AP.scanT >= 0.5 then
+        AP.scanT = now
+        scanAdmins()
+    end
+
+    local list = AP.list
+    local n = #list
+    local w, hh, rh = AP.W, AP.HEADH, AP.ROWH
+    local targetH = hh + math.max(n, 1) * rh + 8
+    AP.h = AP.h > 0 and damp(AP.h, targetH, 14, dt) or targetH
+
+    local a = AP.alpha
+    local e = 1 - (1 - a) ^ 3
+    local h = math.floor(AP.h + 0.5)
+    local vs = Camera.ViewportSize
+    local x = math.floor(vs.X - w - 18 + (1 - e) * 40 + 0.5)
+    local y = 18
+
+    -- корпус: мягкая тень, светящаяся акцентная рамка, фон
+    AP.shadow:set(x + 3, y + 5, w, h, 11, SHADOW_COL, a * 0.35)
+    local glowPulse = Settings.pulse and (0.75 + 0.25 * math.sin(clock * 2)) or 1
+    AP.border:set(x - 1, y - 1, w + 2, h + 2, 11, cLerp(Theme.Bg, accentAt(0.3), 0.55 * glowPulse), a)
+    AP.bg:set(x, y, w, h, 10, Theme.Bg, a)
+    AP.head:set(x, y, w, hh, 10, Theme.Panel, a)
+    AP.headFix.Position = Vector2.new(x, y + hh - 10)
+    AP.headFix.Size = Vector2.new(w, 10)
+    AP.headFix.Color = Theme.Panel
+    show(AP.headFix, a)
+    AP.line:set(x, y + hh - 2, w, 2, a, accentAt, edgeFade)
+
+    -- live-индикатор: красный если есть админы, зелёный если нет
+    local pulse = (clock * 0.9) % 1
+    local liveCol = n > 0 and Color3.fromRGB(255, 80, 95) or Color3.fromRGB(70, 225, 140)
+    local lp = Vector2.new(x + 18, y + hh / 2 - 1)
+    AP.live.Position = lp
+    AP.live.Radius = 4
+    AP.live.Color = liveCol
+    show(AP.live, a)
+    AP.liveGlow.Position = lp
+    AP.liveGlow.Radius = 4 + pulse * 7
+    AP.liveGlow.Color = liveCol
+    show(AP.liveGlow, a, 0.45 * (1 - pulse))
+
+    local tb = bounds(AP.title)
+    AP.title.Position = Vector2.new(x + 30, y + (hh - tb.Y) / 2 - 1)
+    show(AP.title, a)
+
+    -- счётчик в пилюле
+    if AP.count ~= n then
+        AP.count = n
+        AP.countText.Text = tostring(n)
+    end
+    local cb = bounds(AP.countText)
+    local pw = math.max(24, cb.X + 14)
+    local px, py = x + w - 14 - pw, y + hh / 2 - 11
+    local acc = accentAt(0.6)
+    AP.pill:set(px, py, pw, 20, 10, cLerp(Theme.Panel, acc, 0.28), a)
+    AP.countText.Position = Vector2.new(px + (pw - cb.X) / 2, py + (20 - cb.Y) / 2)
+    AP.countText.Color = cLerp(Theme.Text, acc, 0.5)
+    show(AP.countText, a)
+
+    -- пусто
+    AP.empty = damp(AP.empty, n == 0 and 1 or 0, 12, dt)
+    AP.emptyText.Position = Vector2.new(x + 16 + (1 - AP.empty) * 8, y + hh + 12)
+    show(AP.emptyText, a * AP.empty)
+
+    -- строки
+    local bottom = y + h - 4
+    local rowsN = math.max(n, #AP.rows)
+    for i = 1, rowsN do
+        local entry = list[i]
+        local r = entry and getAdminRow(i) or AP.rows[i]
+        if r then
+            r.anim = damp(r.anim, entry and 1 or 0, 12, dt)
+            if r.anim <= 0 then
+                hideAdminRow(r)
+            else
+                r.hidden = false
+                if entry then
+                    if r.nameT ~= entry.name then
+                        r.nameT = entry.name
+                        r.name.Text = entry.name
+                    end
+                    if r.roleT ~= entry.role then
+                        r.roleT = entry.role
+                        r.role.Text = entry.role
+                        r.col = roleColor(entry.role)
+                        r.role.Color = r.col
+                        r.dot.Color = r.col
+                        r.glow.Color = r.col
+                    end
+                end
+
+                local ry = y + hh + (i - 1) * rh + 4
+                local clip = math.clamp((bottom - (ry + rh - 6)) / 8, 0, 1)
+                local ra = a * r.anim * clip
+                local slide = (1 - r.anim) * 14
+
+                if i > 1 then
+                    r.sep.From = Vector2.new(x + 14, ry - 2)
+                    r.sep.To = Vector2.new(x + w - 14, ry - 2)
+                    show(r.sep, ra, 0.6)
+                else
+                    show(r.sep, 0)
+                end
+
+                local dp = Vector2.new(x + 22 + slide, ry + 17)
+                r.dot.Position = dp
+                r.dot.Radius = 4
+                show(r.dot, ra)
+                local gp = (clock * 0.8 + i * 0.27) % 1
+                r.glow.Position = dp
+                r.glow.Radius = 4 + gp * 6
+                show(r.glow, ra, 0.35 * (1 - gp))
+
+                r.role.Position = Vector2.new(x + 36 + slide, ry + 2)
+                show(r.role, ra)
+                r.name.Position = Vector2.new(x + 36 + slide, ry + 16)
+                show(r.name, ra)
+            end
+        end
+    end
+end
+
+--==================== labels ====================--
+
 local CheaterLabels = {}
-local Cheaters = {}
-local CheaterLastUpdate = 0
+local CheaterState = setmetatable({}, {__mode = "k"})
+local CheaterScanT = 0
+local cheatShown = 0
 
 local AdminTags = {}
-local AdminLastUpdate = 0
+local adminShown = 0
+
+local CHEAT_OFF = Vector3.new(0, 2.5, 0)
+local ADMIN_OFF = Vector3.new(0, 3, 0)
 
 local function GetCheaterLabel(i)
-    if not CheaterLabels[i] then
-        local o = new("Text", {
+    local o = CheaterLabels[i]
+    if not o then
+        o = new("Text", {
             Text = "CHEATER", Color = Color3.fromRGB(255, 60, 60),
             Outline = true, Font = FONT, Size = 14, Center = true, ZIndex = 10,
         })
         CheaterLabels[i] = o
     end
-    return CheaterLabels[i]
+    return o
 end
 
 local function GetAdminTag(i)
-    if not AdminTags[i] then
-        AdminTags[i] = {
+    local t = AdminTags[i]
+    if not t then
+        t = {
             bg = RoundRect.new(9),
             text = new("Text", {
                 Text = "ADMIN", Color = Color3.fromRGB(90, 200, 255),
                 Outline = true, Font = FONT, Size = 14, Center = true, ZIndex = 12,
             }),
         }
+        AdminTags[i] = t
     end
-    return AdminTags[i]
+    return t
 end
 
 local function IsCheater(Player)
-    if not Player then return false end
     local Age = GetAge(Player)
     if Age and Age <= 60 then return true end
     local Char = Player.Character
-    if not Char then return false end
-    local Hrp = Char:FindFirstChild("HumanoidRootPart")
+    local Hrp = Char and Char:FindFirstChild("HumanoidRootPart")
     if not Hrp then return false end
-    local Velocity = Hrp.Velocity
-    if Velocity.Y <= -1000 or Velocity.Y >= 1000 then return true end
+    local ok, vel = pcall(function() return Hrp.Velocity end)
+    if ok and vel and (vel.Y <= -1000 or vel.Y >= 1000) then return true end
     return false
 end
 
--- три секции с разными throttle
-local adminHudFrame = 0
-local labelFrame = 0
-local inventoryFrame = 0
-
-local function renderAdminHUD()
-    if not Flags.ShowAdmins then return end
-
-    local List = {}
-    for _, P in ipairs(Players:GetPlayers()) do
-        if P == LocalPlayer then continue end
-        local Role = GetRole(P)
-        if Role then
-            table.insert(List, { Name = P.Name, Role = Role })
-        end
-    end
-
-    local vs = Camera.ViewportSize
-    local w, h = 240, 42 + math.max(#List, 1) * 40 + 8
-    local X, Y = vs.X - w - 18, 18
-
-    local Shadow = hudSq()
-    Shadow.Position = Vector2.new(X + 2, Y + 2)
-    Shadow.Size = Vector2.new(w, h)
-    Shadow.Color = Color3.fromRGB(0, 0, 0)
-    Shadow.Transparency = 0.6
-    Shadow.ZIndex = 99
-
-    local Bg = hudSq()
-    Bg.Position = Vector2.new(X, Y)
-    Bg.Size = Vector2.new(w, h)
-    Bg.Color = Theme.Bg
-    Bg.Transparency = 0.08
-    Bg.ZIndex = 100
-
-    local Head = hudSq()
-    Head.Position = Vector2.new(X, Y)
-    Head.Size = Vector2.new(w, 42)
-    Head.Color = Theme.Panel
-    Head.Transparency = 0
-    Head.ZIndex = 101
-
-    local Accent = hudSq()
-    Accent.Position = Vector2.new(X, Y + 40)
-    Accent.Size = Vector2.new(w, 2)
-    Accent.Color = accentAt(0.3)
-    Accent.Transparency = 0
-    Accent.ZIndex = 102
-
-    local Title = hudTx()
-    Title.Text = "ACTIVE ADMINS"
-    Title.Position = Vector2.new(X + 14, Y + 12)
-    Title.Color = Theme.Text
-    Title.Size = 14
-    Title.ZIndex = 103
-
-    local Count = hudTx()
-    Count.Text = "[" .. #List .. "]"
-    Count.Position = Vector2.new(X + w - 42, Y + 12)
-    Count.Color = accentAt(0.5)
-    Count.Size = 14
-    Count.ZIndex = 103
-
-    if #List == 0 then
-        local Empty = hudTx()
-        Empty.Text = "No admins online"
-        Empty.Position = Vector2.new(X + 14, Y + 52)
-        Empty.Color = Theme.SubText
-        Empty.Size = 12
-        Empty.ZIndex = 105
-    else
-        for i, Entry in ipairs(List) do
-            local Ry = Y + 42 + (i - 1) * 40
-            if i > 1 then
-                local Sep = hudLn()
-                Sep.From = Vector2.new(X + 14, Ry)
-                Sep.To = Vector2.new(X + w - 14, Ry)
-                Sep.Color = Theme.Stroke
-                Sep.Thickness = 1
-                Sep.ZIndex = 104
-            end
-            local Col = roleColor(Entry.Role)
-            local Dot = hudCi()
-            Dot.Position = Vector2.new(X + 22, Ry + 20)
-            Dot.Radius = 4
-            Dot.Color = Col
-            Dot.Transparency = 0
-            Dot.ZIndex = 105
-
-            local Role = hudTx()
-            Role.Text = Entry.Role
-            Role.Position = Vector2.new(X + 36, Ry + 5)
-            Role.Color = Col
-            Role.Size = 11
-            Role.ZIndex = 106
-
-            local Name = hudTx()
-            Name.Text = Entry.Name
-            Name.Position = Vector2.new(X + 36, Ry + 20)
-            Name.Color = Theme.Text
-            Name.Size = 12
-            Name.ZIndex = 106
-        end
-    end
-end
-
 local function renderLabels()
-    local Now = tick()
+    local cheatOn, adminOn = Flags.CheatDetector, Flags.AdminLabels
+    if not cheatOn and not adminOn and cheatShown == 0 and adminShown == 0 then
+        return
+    end
+    local players = getPlayers()
 
-    -- cheater labels
-    if not Flags.CheatDetector then
-        for _, L in ipairs(CheaterLabels) do
-            if L.Visible then L.Visible = false end
-        end
-        Cheaters = {}
-    else
-        if Now - CheaterLastUpdate >= 3 then
-            CheaterLastUpdate = Now
-            for _, P in ipairs(Players:GetPlayers()) do
-                if P == LocalPlayer then continue end
-                if Cheaters[P.Name] == nil then
-                    Cheaters[P.Name] = IsCheater(P)
+    -- cheaters (пометка липкая, остальных перепроверяем раз в 3 сек)
+    local idx = 0
+    if cheatOn then
+        local now = tick()
+        if now - CheaterScanT >= 3 then
+            CheaterScanT = now
+            for _, P in ipairs(players) do
+                if not CheaterState[P] then
+                    CheaterState[P] = IsCheater(P)
                 end
             end
         end
-        local Idx = 0
-        for _, P in ipairs(Players:GetPlayers()) do
-            if P == LocalPlayer then continue end
-            if not Cheaters[P.Name] then continue end
-            local Char = P.Character
-            if not Char then continue end
-            local Head = Char:FindFirstChild("Head")
-            if not Head then continue end
-            local Hum = Char:FindFirstChild("Humanoid")
-            if not Hum or Hum.Health <= 0 then continue end
-            local Screen, OnScreen = WorldToScreen(Head.Position + Vector3.new(0, 2.5, 0))
-            if not OnScreen or not Screen then continue end
-            Idx = Idx + 1
-            local L = GetCheaterLabel(Idx)
-            L.Position = Vector2.new(tonumber(Screen.X) or 0, tonumber(Screen.Y) or 0)
-            show(L, 1)
+        for _, P in ipairs(players) do
+            if CheaterState[P] then
+                local Head = getAliveHead(P)
+                if Head then
+                    local Screen, OnScreen = WorldToScreen(Head.Position + CHEAT_OFF)
+                    if OnScreen and Screen then
+                        idx += 1
+                        local L = GetCheaterLabel(idx)
+                        L.Position = Vector2.new(tonumber(Screen.X) or 0, tonumber(Screen.Y) or 0)
+                        show(L, 1)
+                    end
+                end
+            end
         end
-        for i = Idx + 1, #CheaterLabels do
-            if CheaterLabels[i].Visible then CheaterLabels[i].Visible = false end
-        end
+    elseif cheatShown > 0 then
+        table.clear(CheaterState)
     end
+    for i = idx + 1, cheatShown do show(CheaterLabels[i], 0) end
+    cheatShown = idx
 
     -- admin labels
-    if not Flags.AdminLabels then
-        for _, tag in ipairs(AdminTags) do
-            if tag.text.Visible then tag.text.Visible = false end
-            tag.bg:set(0, 0, 0, 0, 0, Theme.Bg, 0)
-        end
-    else
-        local AIdx = 0
-        for _, P in ipairs(Players:GetPlayers()) do
-            if P == LocalPlayer then continue end
+    local aidx = 0
+    if adminOn then
+        for _, P in ipairs(players) do
             local Role = GetRole(P)
-            if not Role then continue end
-            local Char = P.Character
-            if not Char then continue end
-            local Head = Char:FindFirstChild("Head")
-            if not Head then continue end
-            local Hum = Char:FindFirstChild("Humanoid")
-            if not Hum or Hum.Health <= 0 then continue end
-            local Screen, OnScreen = WorldToScreen(Head.Position + Vector3.new(0, 3, 0))
-            if not OnScreen or not Screen then continue end
+            if Role then
+                local Head = getAliveHead(P)
+                if Head then
+                    local Screen, OnScreen = WorldToScreen(Head.Position + ADMIN_OFF)
+                    if OnScreen and Screen then
+                        aidx += 1
+                        local tag = GetAdminTag(aidx)
+                        if tag.role ~= Role then
+                            tag.role = Role
+                            tag.text.Text = string.upper(Role)
+                            tag.text.Color = roleColor(Role)
+                        end
+                        local sx, sy = tonumber(Screen.X) or 0, tonumber(Screen.Y) or 0
+                        tag.text.Position = Vector2.new(sx, sy)
+                        show(tag.text, 1)
 
-            AIdx = AIdx + 1
-            local tag = GetAdminTag(AIdx)
-            local Col = roleColor(Role)
-            tag.text.Text = string.upper(Role)
-            tag.text.Position = Vector2.new(tonumber(Screen.X) or 0, tonumber(Screen.Y) or 0)
-            tag.text.Color = Col
-            show(tag.text, 1)
-
-            local b = bounds(tag.text)
-            local padX, padY = 8, 3
-            local bx = (tonumber(Screen.X) or 0) - b.X / 2 - padX
-            local by = (tonumber(Screen.Y) or 0) - b.Y / 2 - padY
-            tag.bg:set(bx, by, b.X + padX * 2, b.Y + padY * 2, 4, Theme.Bg, 0.75)
-        end
-        for i = AIdx + 1, #AdminTags do
-            if AdminTags[i].text.Visible then AdminTags[i].text.Visible = false end
-            AdminTags[i].bg:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+                        local b = bounds(tag.text)
+                        tag.bg:set(sx - b.X / 2 - 8, sy - b.Y / 2 - 3, b.X + 16, b.Y + 6, 4, Theme.Bg, 0.75)
+                    end
+                end
+            end
         end
     end
+    for i = aidx + 1, adminShown do
+        local tag = AdminTags[i]
+        show(tag.text, 0)
+        tag.bg:set(0, 0, 0, 0, 0, Theme.Bg, 0)
+    end
+    adminShown = aidx
 end
 
-local function renderInventory()
-    local Now = tick()
+--==================== inventory render ====================--
 
+local function renderInventory()
     if not Flags.Inventory then
         if ArmorViewerTarget then
             ArmorViewerTarget = nil
-            SlotCache = {}
+            table.clear(SlotCache)
         end
         HideAllSlots()
         return
     end
 
-    if not Camera then
-        HideAllSlots()
-        return
-    end
-
-    local Viewport = Camera.ViewportSize
-    local Current = FindClosestTarget()
-    if not Current or not Current.Character then
+    local Target = FindClosestTarget()
+    local Char = Target and Target.Character
+    if not Char then
         ArmorViewerTarget = nil
-        SlotCache = {}
+        table.clear(SlotCache)
         HideAllSlots()
         return
     end
 
-    if ArmorViewerTarget ~= Current or Now - ArmorLastUpdate >= ARMOR_INTERVAL then
+    local Now = tick()
+    if ArmorViewerTarget ~= Target or Now - ArmorLastUpdate >= ARMOR_INTERVAL then
         ArmorLastUpdate = Now
-        ArmorViewerTarget = Current
-        RebuildSlotCache(Current.Character)
+        ArmorViewerTarget = Target
+        RebuildSlotCache(Char)
     else
-        -- обновляем картинки только когда что-то доехало
-        if UpdateSlotCacheImages() then
-            SlotCacheDirty = true
-        end
+        UpdateSlotCacheImages()
     end
 
+    slotsHidden = false
+    local Viewport = Camera.ViewportSize
     local TotalWidth = BoxCount * BoxSize + (BoxCount - 1) * BoxSpacing
-    local StartX = (Viewport.X - TotalWidth) / 2
+    local StartX = math.floor((Viewport.X - TotalWidth) / 2)
     local Y = TopMargin
     for I = 1, BoxCount do
         local Slot = SlotCache[I]
         local Draw = SlotDrawings[I]
         local X = StartX + (I - 1) * (BoxSize + BoxSpacing)
-        Draw.Bg.Color = Theme.Panel
-        Draw.Bg.Position = Vector2.new(X, Y)
-        Draw.Bg.Size = Vector2.new(BoxSize, BoxSize)
-        Draw.Bg.Visible = true
+        local moved = Draw.lastX ~= X or Draw.lastY ~= Y
+        if moved then
+            Draw.lastX, Draw.lastY = X, Y
+            Draw.Bg.Position = Vector2.new(X, Y)
+            Draw.Bg.Size = Vector2.new(BoxSize, BoxSize)
+            Draw.Img.Position = Vector2.new(X + 2, Y + 2)
+            Draw.Img.Size = Vector2.new(BoxSize - 4, BoxSize - 4)
+        end
+        show(Draw.Bg, 0.65)
         if Slot and Slot.Icon then
             if Draw.LastIcon ~= Slot.Icon then
                 Draw.Img.Data = Slot.Icon
                 Draw.LastIcon = Slot.Icon
             end
-            Draw.Img.Position = Vector2.new(X + 2, Y + 2)
-            Draw.Img.Size = Vector2.new(BoxSize - 4, BoxSize - 4)
-            Draw.Img.Visible = true
+            show(Draw.Img, 1)
         else
-            Draw.Img.Visible = false
+            show(Draw.Img, 0)
             Draw.LastIcon = nil
         end
     end
 end
 
--- единая обёртка, вызывается раз в N кадров на секцию
-local function renderFeatures()
-    hudReset()
-    -- admin HUD обновляем раз в 6 кадров, статичная панель всё равно
-    if frameCounter % 6 == 0 then
-        renderAdminHUD()
-    elseif Flags.ShowAdmins and HudPool.lastCount > 0 then
-        -- переиспользуем прошлые объекты - просто оставляем видимыми
-        -- объекты уже Visible из прошлого раза, ничего не делаем
-        hudFinalize()
-        -- но labels надо всё равно рисовать
-        renderLabels()
-        if frameCounter % 2 == 0 then renderInventory() end
-        return
-    end
+local function renderFeatures(dt)
+    renderAdminPanel(dt)
     renderLabels()
     if frameCounter % 2 == 0 then renderInventory() end
-    hudFinalize()
 end
 
 --==================== RENDER ====================--
@@ -1416,12 +1488,13 @@ local function renderBody(dt)
     particleAnim = damp(particleAnim, Settings.particles and 1 or 0, 6, dt)
     if particleAnim > 0 or not V.particlesHidden then
         V.particlesHidden = particleAnim <= 0
+        local pw, ph = W - SIDEBAR - 12, H - HEADER - 12
         for _, p in ipairs(Particles) do
             p.y -= p.s * dt * Settings.speed
             if p.y < 0 then p.y = 1; p.x = math.random() end
             p.o.Position = Vector2.new(
-                ox + SIDEBAR + 6 + p.x * (W - SIDEBAR - 12) + math.sin(clock + p.ph) * 4,
-                oy + HEADER + 6 + p.y * (H - HEADER - 12)
+                ox + SIDEBAR + 6 + p.x * pw + math.sin(clock + p.ph) * 4,
+                oy + HEADER + 6 + p.y * ph
             )
             p.o.Radius = p.r
             p.o.Color = accentAt(p.x)
@@ -1430,16 +1503,16 @@ local function renderBody(dt)
         end
     end
 
-    local lc = Vector2.new(ox + 28, oy + 28)
+    local lcx, lcy = ox + 28, oy + 28
     local orbitX = math.cos(clock * 2) * 4
     local orbitY = math.sin(clock * 2) * 4
-    V.logoA.Position = Vector2.new(lc.X + orbitX, lc.Y + orbitY)
+    V.logoA.Position = Vector2.new(lcx + orbitX, lcy + orbitY)
     V.logoA.Radius = 8
     V.logoA.Color = Theme.AccentA
-    V.logoB.Position = Vector2.new(lc.X - orbitX, lc.Y - orbitY)
+    V.logoB.Position = Vector2.new(lcx - orbitX, lcy - orbitY)
     V.logoB.Radius = 8
     V.logoB.Color = Theme.AccentB
-    V.logoCore.Position = lc
+    V.logoCore.Position = Vector2.new(lcx, lcy)
     V.logoCore.Radius = 3
     V.logoCore.Color = Color3.new(1, 1, 1)
     show(V.logoA, a, 0.85); show(V.logoB, a, 0.85); show(V.logoCore, a)
@@ -1461,6 +1534,7 @@ local function renderBody(dt)
     show(V.indicatorBar, a)
 
     local active = Win.tabs[Win.active]
+    local tabCount = math.max(1, #Win.tabs)
     for i, tab in ipairs(Win.tabs) do
         local ty = tabY0 + (i - 1) * 38
         local isActive = i == Win.active
@@ -1474,7 +1548,7 @@ local function renderBody(dt)
         show(tab.label, a)
         tab.icon.Position = Vector2.new(ox + 25, ty + 16)
         tab.icon.Radius = 3 + tab.sel * 1.2
-        tab.icon.Color = cLerp(Theme.SubText, accentAt(i / math.max(1, #Win.tabs)), tab.sel)
+        tab.icon.Color = cLerp(Theme.SubText, accentAt(i / tabCount), tab.sel)
         show(tab.icon, a)
     end
 
@@ -1483,8 +1557,8 @@ local function renderBody(dt)
     show(V.hint, a, 0.7)
 
     if active then
-        V.pageTitle.Text = active.name
-        V.pageSub.Text = active.desc
+        if V.pageTitle.Text ~= active.name then V.pageTitle.Text = active.name end
+        if V.pageSub.Text ~= active.desc then V.pageSub.Text = active.desc end
         local ta = a * active.alpha
         V.pageTitle.Position = Vector2.new(ox + SIDEBAR + 20 + (1 - active.alpha) * 12, oy + 10)
         V.pageTitle.Color = Theme.Text
@@ -1533,11 +1607,9 @@ local function render(dt)
     local ok, err = pcall(renderBody, dt)
     if not ok then reportError("renderBody", err) end
 
-    -- фичи рисуем только когда включена хотя бы одна
-    if Flags.ShowAdmins or Flags.CheatDetector or Flags.AdminLabels or Flags.Inventory then
-        local ok2, err2 = pcall(renderFeatures)
-        if not ok2 then reportError("renderFeatures", err2) end
-    end
+    -- внутри каждой секции дешёвый ранний выход, когда она выключена
+    local ok2, err2 = pcall(renderFeatures, dt)
+    if not ok2 then reportError("renderFeatures", err2) end
 end
 
 table.insert(Connections, RunService.RenderStepped:Connect(render))
@@ -1614,6 +1686,7 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
         prevI = ik
 
         updateDrag()
+        FlushRecoil()
     end)
     if not ok then reportError("input", err) end
 end))
@@ -1623,9 +1696,7 @@ function Win:Destroy()
     self.destroyed = true
     for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
     for i = #Objects, 1, -1 do pcall(function() Objects[i]:Remove() end) end
-    for i = #HudPool.objs, 1, -1 do pcall(function() HudPool.objs[i]:Remove() end) end
     table.clear(Objects)
-    table.clear(HudPool.objs)
     if env.AuroraUI == self then env.AuroraUI = nil end
 end
 
@@ -1664,7 +1735,10 @@ main:Toggle({
 main:Toggle({
     Name = "Admin List",
     Default = false,
-    Callback = function(v) Flags.ShowAdmins = v end,
+    Callback = function(v)
+        Flags.ShowAdmins = v
+        if v then AP.scanT = -1 end
+    end,
 })
 
 main:Toggle({
@@ -1683,7 +1757,7 @@ recoil:Slider({
     Default = -0.55,
     Callback = function(v)
         Flags.RecoilValue = v
-        if Flags.RecoilEnabled then ApplyRecoil(v) end
+        if Flags.RecoilEnabled then QueueRecoil(v) end
     end,
 })
 
@@ -1692,6 +1766,7 @@ RecoilToggle = recoil:Toggle({
     Default = false,
     Callback = function(v)
         Flags.RecoilEnabled = v
+        RecoilQueued = nil
         if v then ApplyRecoil(Flags.RecoilValue) else ApplyRecoil(1) end
     end,
 })
@@ -1700,6 +1775,7 @@ recoil:Button({
     Name = "Apply Value",
     Callback = function()
         if Flags.RecoilEnabled then
+            RecoilQueued = nil
             ApplyRecoil(Flags.RecoilValue)
             Win:Notify("Recoil", "Applied: " .. tostring(Flags.RecoilValue), 2)
         else
