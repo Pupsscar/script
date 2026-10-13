@@ -1,5 +1,5 @@
 --[[
-    Aurora UI · Drawing API — v1.9
+    Aurora UI · Drawing API — v2.0
     RightShift - toggle, I - No Recoil.
     При открытом меню: мышь свободна, панели тащатся за шапку,
     инвентарь меняет размер за уголок справа снизу.
@@ -571,7 +571,7 @@ V.logoA = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6, Radius = 8})
 V.logoB = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6, Radius = 8})
 V.logoCore = new("Circle", {Filled = true, NumSides = 12, ZIndex = 7, Radius = 3, Color = WHITE})
 V.title = new("Text", {Text = "Aurora", Size = 19, Font = FONT, ZIndex = 6, Color = Theme.Text})
-V.subtitle = new("Text", {Text = "v1.9  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6, Color = Theme.SubText})
+V.subtitle = new("Text", {Text = "v2.0  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6, Color = Theme.SubText})
 V.sideDiv = Gradient.new(16, 5)
 V.indicator = RoundRect.new(4)
 V.indicatorBar = new("Square", {Filled = true, Thickness = 1, ZIndex = 6, Size = Vector2.new(3, 16)})
@@ -1020,37 +1020,52 @@ end
 
 --==================== memoized memory reads ====================--
 
-local UserIdCache = setmetatable({}, {__mode = "k"})
-local RoleCache = setmetatable({}, {__mode = "k"})
-local AgeCache = setmetatable({}, {__mode = "k"})
+-- ВАЖНО: исполнитель отдаёт новые объекты Player при каждом GetPlayers(),
+-- поэтому все кэши держим по нику, а не по объекту (иначе всё "забывается"
+-- каждые 0.5 сек и плашки мигают)
+
+local function pkey(P)
+    local ok, n = pcall(function() return P.Name end)
+    return ok and n or nil
+end
+
+local UserIdCache = {}
+local RoleCache = {}
+local AgeCache = {}
 
 local function GetUserId(P)
-    local id = UserIdCache[P]
+    local k = pkey(P)
+    if not k then return nil end
+    local id = UserIdCache[k]
     if id then return id end
     local ok, v = pcall(function()
         return memory_read("uintptr_t", P.Address + Offsets.Player.UserId)
     end)
     if ok and type(v) == "number" and v > 0 then
-        UserIdCache[P] = v
+        UserIdCache[k] = v
         return v
     end
     return nil
 end
 
 local function GetRole(P)
-    local cached = RoleCache[P]
+    local k = pkey(P)
+    if not k then return nil end
+    local cached = RoleCache[k]
     if cached ~= nil then
         return cached or nil
     end
     local id = GetUserId(P)
     if not id then return nil end
     local role = ModeratorIDs[id] or false
-    RoleCache[P] = role
+    RoleCache[k] = role
     return role or nil
 end
 
 local function GetAge(P)
-    local c = AgeCache[P]
+    local k = pkey(P)
+    if not k then return nil end
+    local c = AgeCache[k]
     local now = tick()
     if c and (now - c.t) < 60 then
         return c.v
@@ -1059,7 +1074,7 @@ local function GetAge(P)
         return memory_read("int", P.Address + Offsets.Player.AccountAge)
     end)
     if ok and type(v) == "number" then
-        if c then c.v, c.t = v, now else AgeCache[P] = {v = v, t = now} end
+        if c then c.v, c.t = v, now else AgeCache[k] = {v = v, t = now} end
         return v
     end
     return nil
@@ -1448,9 +1463,10 @@ local function renderInventory(dt)
 
     if on and target then
         local now = tick()
-        if ArmorViewerTarget ~= target or now - ArmorLastUpdate >= ARMOR_INTERVAL then
+        local tk = pkey(target)
+        if ArmorViewerTarget ~= tk or now - ArmorLastUpdate >= ARMOR_INTERVAL then
             ArmorLastUpdate = now
-            ArmorViewerTarget = target
+            ArmorViewerTarget = tk
             RebuildSlotCache(target.Character)
         else
             UpdateSlotCacheImages()
@@ -1656,7 +1672,7 @@ end
 
 local Plates = {}
 local platesActive = 0
-local CheaterState = setmetatable({}, {__mode = "k"})
+local CheaterState = {}  -- [ник] = причина / false
 local CheaterScanT = 0
 local PLATE_OFF = Vector3.new(0, 2.6, 0)
 local PLATE_MAX_DIST = 1500
@@ -1745,8 +1761,9 @@ local function renderPlates(dt)
         if now - CheaterScanT >= 3 then
             CheaterScanT = now
             for _, P in ipairs(players) do
-                if not CheaterState[P] then
-                    CheaterState[P] = IsCheater(P)
+                local k = pkey(P)
+                if k and not CheaterState[k] then
+                    CheaterState[k] = IsCheater(P)
                 end
             end
         end
@@ -1756,7 +1773,8 @@ local function renderPlates(dt)
 
     for _, P in ipairs(players) do
         local role = adminOn and GetRole(P) or nil
-        local cheat = cheatOn and CheaterState[P] or nil
+        local key = pkey(P)
+        local cheat = cheatOn and key and CheaterState[key] or nil
         if role or cheat then
             local head = getAliveHead(P)
             if head then
@@ -1765,11 +1783,11 @@ local function renderPlates(dt)
                 if d <= PLATE_MAX_DIST then
                     local s, onS = WorldToScreen(hp + PLATE_OFF)
                     local sx, sy = s and tonumber(s.X), s and tonumber(s.Y)
-                    if onS and sx and sy then
-                        local pl = Plates[P]
+                    if onS and sx and sy and key then
+                        local pl = Plates[key]
                         if not pl then
                             pl = newPlate()
-                            Plates[P] = pl
+                            Plates[key] = pl
                         end
                         pl.lastT = now
                         -- сглаживание: большие скачки (поворот камеры) - сразу, мелкая дрожь - плавно
@@ -1800,9 +1818,9 @@ local function renderPlates(dt)
     end
 
     platesActive = 0
-    for P, pl in pairs(Plates) do
+    for key, pl in pairs(Plates) do
         local want = (now - pl.lastT) < PLATE_GRACE
-            and ((adminOn and GetRole(P)) or (cheatOn and CheaterState[P]))
+            and ((adminOn and RoleCache[key]) or (cheatOn and CheaterState[key])) and true or false
         pl.a = damp(pl.a, want and 1 or 0, 12, dt)
         if not want and pl.a <= 0.01 then
             pl.a = 0
@@ -1812,7 +1830,7 @@ local function renderPlates(dt)
             end
             if now - pl.lastT > 15 then
                 destroyPlate(pl)
-                Plates[P] = nil
+                Plates[key] = nil
             end
         else
             pl.hidden = false
