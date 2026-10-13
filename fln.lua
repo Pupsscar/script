@@ -1,7 +1,8 @@
 --[[
-    Aurora UI · Drawing API — v1.8
+    Aurora UI · Drawing API — v1.9
     RightShift - toggle, I - No Recoil.
-    При открытом меню: мышь свободна, панели админов/инвентаря тащатся за шапку.
+    При открытом меню: мышь свободна, панели тащатся за шапку,
+    инвентарь меняет размер за уголок справа снизу.
 ]]
 
 local UIS = game:GetService("UserInputService")
@@ -70,6 +71,17 @@ local Presets = {
     {Color3.fromRGB(255, 215, 80), Color3.fromRGB(70, 255, 160)},
 }
 
+-- проверяем, умеет ли Drawing скруглять Square сам (Corner)
+local NATIVE_CORNER = false
+pcall(function()
+    local s = Drawing.new("Square")
+    s.Visible = false
+    s.Corner = 4
+    local v = s.Corner
+    pcall(function() s:Remove() end)
+    NATIVE_CORNER = tonumber(v) == 4
+end)
+
 local Settings = {
     glow = true,
     glowPower = 1,
@@ -78,6 +90,9 @@ local Settings = {
     speed = 1,
     unlockMouse = true,
     cursor = true,
+    nativeRound = NATIVE_CORNER,
+    hudOpacity = 0.72,  -- прозрачность фона HUD-панелей
+    invScale = 1,       -- размер инвентаря
 }
 
 local Objects, Connections = {}, {}
@@ -99,6 +114,8 @@ local OutlineText = setmetatable({}, {__mode = "k"})
 local VisCache = setmetatable({}, {__mode = "k"})
 local TrCache = setmetatable({}, {__mode = "k"})
 local BoundsCache = setmetatable({}, {__mode = "k"})
+local TextCache = setmetatable({}, {__mode = "k"})
+local SizeCache = setmetatable({}, {__mode = "k"})
 local accentCache = {}
 local accentFrame = -1
 local ACC_Q = 48
@@ -107,8 +124,10 @@ local function new(class, props)
     local o = Drawing.new(class)
     o.Visible = false
     for k, v in pairs(props or {}) do o[k] = v end
-    if class == "Text" and props and props.Outline then
-        OutlineText[o] = true
+    if class == "Text" and props then
+        if props.Outline then OutlineText[o] = true end
+        if props.Text then TextCache[o] = props.Text end
+        if props.Size then SizeCache[o] = props.Size end
     end
     Objects[#Objects + 1] = o
     return o
@@ -163,6 +182,22 @@ local function show(o, alpha, base)
     end
 end
 
+-- Text/Size пишутся только при изменении, без чтения свойств из Drawing
+local function setText(o, text)
+    if TextCache[o] ~= text then
+        TextCache[o] = text
+        o.Text = text
+    end
+end
+
+local function setSize(o, size)
+    if SizeCache[o] ~= size then
+        SizeCache[o] = size
+        o.Size = size
+        BoundsCache[o] = nil
+    end
+end
+
 local function damp(a, b, speed, dt)
     a = tonumber(a) or 0
     b = tonumber(b) or 0
@@ -171,7 +206,6 @@ local function damp(a, b, speed, dt)
     return r
 end
 
--- 48 ступеней вместо 10 + smoothstep + gamma-смешивание -> без полос
 local function accentAt(p)
     if accentFrame ~= frameCounter then
         table.clear(accentCache)
@@ -187,7 +221,6 @@ local function accentAt(p)
     return c
 end
 
--- пульс квантуется, чтобы рамки не перерисовывались каждый кадр
 local function pulseK(speed, ph, lo)
     if not Settings.pulse then return 1 end
     lo = lo or 0.75
@@ -197,7 +230,7 @@ end
 
 local function bounds(t)
     if not t then return Vector2.new(0, 14) end
-    local text = tostring(t.Text or "")
+    local text = TextCache[t] or ""
     local c = BoundsCache[t]
     if c and c.text == text then return c.b end
 
@@ -207,17 +240,8 @@ local function bounds(t)
         BoundsCache[t] = {text = text, b = b}
         return b
     end
-    local size = tonumber(t.Size) or 14
+    local size = SizeCache[t] or 14
     return Vector2.new(#text * size * 0.5, size)
-end
-
-local function setText(o, key, text)
-    -- пишем Text только при изменении
-    if o[key] ~= text then
-        o[key] = text
-        return true
-    end
-    return false
 end
 
 local function inRect(m, r)
@@ -253,19 +277,49 @@ local function fireCallback(cb, ...)
 end
 
 --==================== primitives ====================--
+-- RoundRect: если Drawing умеет Corner — 1 объект, честная прозрачность.
+-- иначе 3 полосы без перекрытия + 4 круга (без тёмного "креста" на полупрозрачном фоне).
 
 local RoundRect = {}
 RoundRect.__index = RoundRect
 
-function RoundRect.new(z)
-    local self = setmetatable({}, RoundRect)
-    self.hr = new("Square", {Filled = true, Thickness = 1, ZIndex = z})
-    self.vr = new("Square", {Filled = true, Thickness = 1, ZIndex = z})
-    self.c = {}
-    for i = 1, 4 do
-        self.c[i] = new("Circle", {Filled = true, NumSides = 12, Thickness = 1, ZIndex = z})
+-- outline=true: в нативном режиме рисуется контуром поверх, иначе заливкой снизу (zFill)
+function RoundRect.new(z, outline, zFill)
+    return setmetatable({z = z, outline = outline, zf = zFill or z}, RoundRect)
+end
+
+local function useNative()
+    return NATIVE_CORNER and Settings.nativeRound
+end
+
+function RoundRect:_native()
+    local s = self.sq
+    if not s then
+        s = new("Square", {Filled = not self.outline, Thickness = 1, ZIndex = self.z})
+        self.sq = s
     end
-    return self
+    return s
+end
+
+function RoundRect:_parts()
+    local p = self.p
+    if not p then
+        local z = self.zf
+        p = {}
+        for i = 1, 3 do
+            p[i] = new("Square", {Filled = true, Thickness = 1, ZIndex = z})
+        end
+        for i = 4, 7 do
+            p[i] = new("Circle", {Filled = true, NumSides = 12, Thickness = 1, ZIndex = z})
+        end
+        self.p = p
+    end
+    return p
+end
+
+local function hideList(p)
+    if not p then return end
+    for i = 1, #p do show(p[i], 0) end
 end
 
 local function setCorner(c, px, py, r, color, a)
@@ -283,48 +337,78 @@ function RoundRect:set(x, y, w, h, r, color, alpha)
     r = tonumber(r) or 0
     color = color or WHITE
     alpha = tonumber(alpha) or 0
+    local native = useNative()
 
     local L = self.last
     if L then
-        if alpha <= 0 and L.a <= 0 then return end
-        if L.x == x and L.y == y and L.w == w and L.h == h and L.r == r
-            and L.a == alpha and L.cr == color.R and L.cg == color.G and L.cb == color.B then
-            return
+        if L.native == native then
+            if alpha <= 0 and L.a <= 0 then return end
+            if L.x == x and L.y == y and L.w == w and L.h == h and L.r == r
+                and L.a == alpha and L.cr == color.R and L.cg == color.G and L.cb == color.B then
+                return
+            end
+        else
+            -- режим переключили: прячем старый набор
+            if native then hideList(self.p) else show(self.sq, 0) end
         end
     else
         L = {}
         self.last = L
     end
+    L.native = native
     L.x, L.y, L.w, L.h, L.r, L.a = x, y, w, h, r, alpha
     L.cr, L.cg, L.cb = color.R, color.G, color.B
 
-    local c = self.c
     if w <= 0 or h <= 0 or alpha <= 0 then
-        show(self.hr, 0); show(self.vr, 0)
-        show(c[1], 0); show(c[2], 0); show(c[3], 0); show(c[4], 0)
+        if native then show(self.sq, 0) else hideList(self.p) end
         return
     end
 
-    local minR = w / 2
-    if h / 2 < minR then minR = h / 2 end
+    local minR = math.min(w, h) / 2
     if r > minR then r = minR end
     if r < 0 then r = 0 end
 
-    self.hr.Position = Vector2.new(x, y + r)
-    self.hr.Size = Vector2.new(w, h - r * 2)
-    self.vr.Position = Vector2.new(x + r, y)
-    self.vr.Size = Vector2.new(w - r * 2, h)
-    self.hr.Color = color
-    self.vr.Color = color
-    show(self.hr, alpha)
-    show(self.vr, alpha)
+    if native then
+        local s = self:_native()
+        s.Position = Vector2.new(x, y)
+        s.Size = Vector2.new(w, h)
+        s.Color = color
+        if self.lr ~= r then
+            self.lr = r
+            if not pcall(function() s.Corner = r end) then NATIVE_CORNER = false end
+        end
+        show(s, alpha)
+        return
+    end
 
+    local p = self:_parts()
+    local top, mid, bot = p[1], p[2], p[3]
+    local iw, ih = w - r * 2, h - r * 2
+    if r > 0 and iw > 0 then
+        top.Position = Vector2.new(x + r, y)
+        top.Size = Vector2.new(iw, r)
+        top.Color = color
+        show(top, alpha)
+        bot.Position = Vector2.new(x + r, y + h - r)
+        bot.Size = Vector2.new(iw, r)
+        bot.Color = color
+        show(bot, alpha)
+    else
+        show(top, 0); show(bot, 0)
+    end
+    if ih > 0 then
+        mid.Position = Vector2.new(x, y + r)
+        mid.Size = Vector2.new(w, ih)
+        mid.Color = color
+        show(mid, alpha)
+    else
+        show(mid, 0)
+    end
     local ca = r > 0 and alpha or 0
-    local x1, y1, x2, y2 = x + r, y + r, x + w - r, y + h - r
-    setCorner(c[1], x1, y1, r, color, ca)
-    setCorner(c[2], x2, y1, r, color, ca)
-    setCorner(c[3], x1, y2, r, color, ca)
-    setCorner(c[4], x2, y2, r, color, ca)
+    setCorner(p[4], x + r, y + r, r, color, ca)
+    setCorner(p[5], x + w - r, y + r, r, color, ca)
+    setCorner(p[6], x + r, y + h - r, r, color, ca)
+    setCorner(p[7], x + w - r, y + h - r, r, color, ca)
 end
 
 function RoundRect:hide()
@@ -332,11 +416,10 @@ function RoundRect:hide()
 end
 
 function RoundRect:destroy()
-    kill(self.hr); kill(self.vr)
-    for _, c in ipairs(self.c) do kill(c) end
+    kill(self.sq)
+    if self.p then for _, o in ipairs(self.p) do kill(o) end end
 end
 
--- градиент: геометрия пересчитывается только когда сдвинулся/изменил размер
 local Gradient = {}
 Gradient.__index = Gradient
 
@@ -397,7 +480,6 @@ local function edgeFade(p)
     return v
 end
 
--- "ручка" для перетаскивания: 2x3 точки
 local function newGrip(z)
     local g = {}
     for i = 1, 6 do
@@ -420,6 +502,10 @@ local function setGrip(g, x, y, a, col)
     end
 end
 
+local function hideGrip(g)
+    for i = 1, 6 do show(g[i], 0) end
+end
+
 --==================== shared frame state ====================--
 
 local CurMouse = Vector2.new()
@@ -434,7 +520,6 @@ local function clampN(v, lo, hi)
     return v
 end
 
--- позиция перетаскиваемой панели: default пока не трогали, дальше tx/ty
 local function panelPos(P, defX, defY, w, h, dt)
     local vs = Camera.ViewportSize
     local tx = clampN(P.tx or defX, 4, vs.X - w - 4)
@@ -486,7 +571,7 @@ V.logoA = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6, Radius = 8})
 V.logoB = new("Circle", {Filled = true, NumSides = 16, ZIndex = 6, Radius = 8})
 V.logoCore = new("Circle", {Filled = true, NumSides = 12, ZIndex = 7, Radius = 3, Color = WHITE})
 V.title = new("Text", {Text = "Aurora", Size = 19, Font = FONT, ZIndex = 6, Color = Theme.Text})
-V.subtitle = new("Text", {Text = "v1.8  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6, Color = Theme.SubText})
+V.subtitle = new("Text", {Text = "v1.9  |  combat + esp", Size = 13, Font = FONT, ZIndex = 6, Color = Theme.SubText})
 V.sideDiv = Gradient.new(16, 5)
 V.indicator = RoundRect.new(4)
 V.indicatorBar = new("Square", {Filled = true, Thickness = 1, ZIndex = 6, Size = Vector2.new(3, 16)})
@@ -603,6 +688,11 @@ function TabMT:Slider(o)
         end
     end
 
+    -- обновить значение без вызова callback (синхронизация снаружи)
+    function el:SetSilent(v)
+        self.value = math.clamp(v, min, max)
+    end
+
     function el:drag(m)
         local r = self.trackRect
         if not r then return end
@@ -624,10 +714,7 @@ function TabMT:Slider(o)
         self.label.Position = Vector2.new(x + 14, y + 10)
         show(self.label, a)
 
-        if self.shownValue ~= self.value then
-            self.shownValue = self.value
-            self.valueText.Text = string.format(fmt, self.value) .. (o.Suffix or "")
-        end
+        setText(self.valueText, string.format(fmt, self.value) .. (o.Suffix or ""))
         local vb = bounds(self.valueText)
         self.valueText.Position = Vector2.new(x + w - 14 - vb.X, y + 11)
         self.valueText.Color = cMix(Theme.SubText, accentAt(0.6), self.hover)
@@ -1102,11 +1189,9 @@ local AP = {
     hidden = true, empty = 0, hover = 0,
     W = 250, HEADH = 44, ROWH = 38,
 }
-AP.shadow = RoundRect.new(97)
-AP.border = RoundRect.new(98)
-AP.bg = RoundRect.new(99)
-AP.head = RoundRect.new(100)
-AP.headFix = new("Square", {Filled = true, Thickness = 1, ZIndex = 100})
+AP.shadow = RoundRect.new(95)
+AP.border = RoundRect.new(98, true, 96)
+AP.bg = RoundRect.new(97)
 AP.line = Gradient.new(28, 101)
 AP.liveGlow = new("Circle", {Filled = true, NumSides = 18, ZIndex = 101})
 AP.live = new("Circle", {Filled = true, NumSides = 14, ZIndex = 102, Radius = 4})
@@ -1138,11 +1223,11 @@ local function hideAdminRow(r)
 end
 
 local function hideAdminPanel()
-    AP.shadow:hide(); AP.border:hide(); AP.bg:hide(); AP.head:hide(); AP.pill:hide()
+    AP.shadow:hide(); AP.border:hide(); AP.bg:hide(); AP.pill:hide()
     AP.line:set(0, 0, 0, 0, 0)
-    show(AP.headFix, 0); show(AP.liveGlow, 0); show(AP.live, 0)
+    show(AP.liveGlow, 0); show(AP.live, 0)
     show(AP.title, 0); show(AP.countText, 0); show(AP.emptyText, 0)
-    for i = 1, 6 do show(AP.grip[i], 0) end
+    hideGrip(AP.grip)
     for _, r in ipairs(AP.rows) do
         r.anim = 0
         hideAdminRow(r)
@@ -1192,6 +1277,7 @@ local function renderAdminPanel(dt)
     AP.h = AP.h > 0 and damp(AP.h, targetH, 14, dt) or targetH
 
     local a = AP.alpha
+    local op = Settings.hudOpacity
     local e = 1 - (1 - a) ^ 3
     local h = math.floor(AP.h + 0.5)
     local vs = Camera.ViewportSize
@@ -1205,17 +1291,12 @@ local function renderAdminPanel(dt)
     if hov then HoverAny = true end
     AP.hover = damp(AP.hover, hov and 1 or 0, 12, dt)
 
-    AP.shadow:set(x + 3, y + 5, w, h, 11, SHADOW_COL, a * 0.35)
-    local bk = (0.5 + 0.3 * AP.hover) * pulseK(2)
-    AP.border:set(x - 1, y - 1, w + 2, h + 2, 11, cMix(Theme.Bg, accentAt(0.3), bk), a)
-    AP.bg:set(x, y, w, h, 10, Theme.Bg, a)
-    local hcol = AP.hover > 0.01 and cMix(Theme.Panel, accentAt(0.3), 0.08 * AP.hover) or Theme.Panel
-    AP.head:set(x, y, w, hh, 10, hcol, a)
-    AP.headFix.Position = Vector2.new(x, y + hh - 10)
-    AP.headFix.Size = Vector2.new(w, 10)
-    AP.headFix.Color = hcol
-    show(AP.headFix, a)
-    AP.line:set(x, y + hh - 2, w, 2, a, accentAt, edgeFade)
+    -- полупрозрачный корпус: фон * hudOpacity, текст остаётся чётким
+    AP.shadow:set(x + 3, y + 5, w, h, 11, SHADOW_COL, a * 0.3 * op)
+    local bk = (0.5 + 0.35 * AP.hover) * pulseK(2)
+    AP.border:set(x - 1, y - 1, w + 2, h + 2, 11, cMix(Theme.Bg, accentAt(0.3), bk), a * math.min(1, op + 0.2))
+    AP.bg:set(x, y, w, h, 10, Theme.Bg, a * op)
+    AP.line:set(x + 6, y + hh - 2, w - 12, 2, a, accentAt, edgeFade)
 
     local pulse = (clock * 0.9) % 1
     local liveCol = n > 0 and Color3.fromRGB(255, 80, 95) or Color3.fromRGB(70, 225, 140)
@@ -1232,17 +1313,16 @@ local function renderAdminPanel(dt)
     AP.title.Position = Vector2.new(x + 30, y + (hh - tb.Y) / 2 - 1)
     show(AP.title, a)
 
-    setText(AP.countText, "Text", tostring(n))
+    setText(AP.countText, tostring(n))
     local cb = bounds(AP.countText)
     local pw = math.max(24, cb.X + 14)
     local px, py = x + w - 14 - pw, y + hh / 2 - 11
     local acc = accentAt(0.6)
-    AP.pill:set(px, py, pw, 20, 10, cMix(Theme.Panel, acc, 0.28), a)
+    AP.pill:set(px, py, pw, 20, 10, cMix(Theme.Panel, acc, 0.3), a * math.min(1, op + 0.15))
     AP.countText.Position = Vector2.new(px + (pw - cb.X) / 2, py + (20 - cb.Y) / 2)
     AP.countText.Color = cMix(Theme.Text, acc, 0.5)
     show(AP.countText, a)
 
-    -- ручка видна только когда меню открыто
     setGrip(AP.grip, px - 16, y + hh / 2 - 5, a * Win.alpha * (0.45 + 0.55 * AP.hover),
         AP.hover > 0.01 and cMix(Theme.SubText, accentAt(0.5), AP.hover) or nil)
 
@@ -1262,10 +1342,10 @@ local function renderAdminPanel(dt)
             else
                 r.hidden = false
                 if entry then
-                    setText(r.name, "Text", entry.name)
+                    setText(r.name, entry.name)
                     if r.roleT ~= entry.role then
                         r.roleT = entry.role
-                        r.role.Text = entry.role
+                        setText(r.role, entry.role)
                         local col = roleColor(entry.role)
                         r.role.Color = col
                         r.dot.Color = col
@@ -1281,7 +1361,7 @@ local function renderAdminPanel(dt)
                 if i > 1 then
                     r.sep.From = Vector2.new(x + 14, ry - 2)
                     r.sep.To = Vector2.new(x + w - 14, ry - 2)
-                    show(r.sep, ra, 0.6)
+                    show(r.sep, ra, 0.5)
                 else
                     show(r.sep, 0)
                 end
@@ -1305,31 +1385,27 @@ end
 
 --==================== INVENTORY PANEL ====================--
 
-local SLOT, SLOT_GAP, IV_PAD, IV_HEAD = 56, 8, 12, 40
-local IV_W = IV_PAD * 2 + BoxCount * SLOT + (BoxCount - 1) * SLOT_GAP
-local IV_H = IV_HEAD + 10 + SLOT + IV_PAD
-
-local IV = {alpha = 0, hidden = true, hover = 0, slots = {}, hasTarget = 0, distT = 0}
-IV.shadow = RoundRect.new(90)
-IV.border = RoundRect.new(91)
-IV.bg = RoundRect.new(92)
-IV.head = RoundRect.new(93)
-IV.headFix = new("Square", {Filled = true, Thickness = 1, ZIndex = 93})
-IV.line = Gradient.new(40, 94)
+local IV = {alpha = 0, hidden = true, hover = 0, rhover = 0, slots = {}, hasTarget = 0, distT = 0}
+IV.shadow = RoundRect.new(89)
+IV.border = RoundRect.new(92, true, 90)
+IV.bg = RoundRect.new(91)
+IV.line = Gradient.new(40, 93)
 IV.avGlow = new("Circle", {Filled = true, NumSides = 20, ZIndex = 94})
-IV.avA = new("Circle", {Filled = true, NumSides = 16, ZIndex = 95, Radius = 6})
-IV.avB = new("Circle", {Filled = true, NumSides = 16, ZIndex = 95, Radius = 6})
-IV.avCore = new("Circle", {Filled = true, NumSides = 10, ZIndex = 96, Radius = 2.5, Color = WHITE})
+IV.avA = new("Circle", {Filled = true, NumSides = 16, ZIndex = 95})
+IV.avB = new("Circle", {Filled = true, NumSides = 16, ZIndex = 95})
+IV.avCore = new("Circle", {Filled = true, NumSides = 10, ZIndex = 96, Color = WHITE})
 IV.name = new("Text", {Text = "No target", Size = 15, Font = FONT, ZIndex = 95, Color = Theme.Text})
 IV.sub = new("Text", {Text = "", Size = 12, Font = FONT, ZIndex = 95, Color = Theme.SubText})
 IV.pill = RoundRect.new(94)
 IV.count = new("Text", {Text = "0/" .. BoxCount, Size = 13, Font = FONT, ZIndex = 95})
 IV.grip = newGrip(95)
+IV.rs1 = new("Line", {Thickness = 1.5, ZIndex = 96})
+IV.rs2 = new("Line", {Thickness = 1.5, ZIndex = 96})
 
 for i = 1, BoxCount do
     IV.slots[i] = {
-        ring = RoundRect.new(94),
-        card = RoundRect.new(95),
+        ring = RoundRect.new(95, true, 93),
+        card = RoundRect.new(94),
         sheen = new("Line", {Thickness = 1, ZIndex = 96, Color = WHITE}),
         shimmer = new("Square", {Filled = true, Thickness = 1, ZIndex = 96}),
         img = new("Image", {ZIndex = 97}),
@@ -1339,15 +1415,27 @@ for i = 1, BoxCount do
 end
 
 local function hideInventory()
-    IV.shadow:hide(); IV.border:hide(); IV.bg:hide(); IV.head:hide(); IV.pill:hide()
+    IV.shadow:hide(); IV.border:hide(); IV.bg:hide(); IV.pill:hide()
     IV.line:set(0, 0, 0, 0, 0)
-    show(IV.headFix, 0); show(IV.avGlow, 0); show(IV.avA, 0); show(IV.avB, 0); show(IV.avCore, 0)
+    show(IV.avGlow, 0); show(IV.avA, 0); show(IV.avB, 0); show(IV.avCore, 0)
     show(IV.name, 0); show(IV.sub, 0); show(IV.count, 0)
-    for i = 1, 6 do show(IV.grip[i], 0) end
+    show(IV.rs1, 0); show(IV.rs2, 0)
+    hideGrip(IV.grip)
     for _, s in ipairs(IV.slots) do
         s.ring:hide(); s.card:hide()
         show(s.sheen, 0); show(s.shimmer, 0); show(s.img, 0); show(s.idx, 0)
     end
+end
+
+-- размеры инвентаря от масштаба
+local function invLayout(S)
+    local slot = math.floor(56 * S + 0.5)
+    local gap = math.max(3, math.floor(8 * S + 0.5))
+    local pad = math.max(6, math.floor(12 * S + 0.5))
+    local head = math.max(26, math.floor(40 * S + 0.5))
+    local w = pad * 2 + BoxCount * slot + (BoxCount - 1) * gap
+    local h = head + math.floor(10 * S + 0.5) + slot + pad
+    return slot, gap, pad, head, w, h
 end
 
 local function renderInventory(dt)
@@ -1372,7 +1460,6 @@ local function renderInventory(dt)
         table.clear(SlotCache)
     end
 
-    -- без цели панель видна только при открытом меню (чтобы её можно было двигать)
     local want = on and (target ~= nil or Win.open)
     IV.alpha = damp(IV.alpha, want and 1 or 0, 10, dt)
     if not want and IV.alpha <= 0 then
@@ -1384,36 +1471,54 @@ local function renderInventory(dt)
     end
     IV.hidden = false
 
+    local S = Settings.invScale
+    local SLOT, GAP, PAD, HEAD, IW, IH = invLayout(S)
+
+    -- размеры текста/кружков меняем только при смене масштаба
+    if IV.lastS ~= S then
+        IV.lastS = S
+        setSize(IV.name, math.max(10, math.floor(15 * S + 0.5)))
+        setSize(IV.sub, math.max(9, math.floor(12 * S + 0.5)))
+        setSize(IV.count, math.max(9, math.floor(13 * S + 0.5)))
+        IV.avA.Radius = 6 * S
+        IV.avB.Radius = 6 * S
+        IV.avCore.Radius = 2.5 * S
+        for _, s in ipairs(IV.slots) do
+            setSize(s.idx, math.max(9, math.floor(12 * S + 0.5)))
+            s.ix = nil
+        end
+    end
+
     local a = IV.alpha
+    local op = Settings.hudOpacity
     local e = 1 - (1 - a) ^ 3
     local vs = Camera.ViewportSize
-    local bx, by = panelPos(IV, (vs.X - IV_W) / 2, 18, IV_W, IV_H, dt)
+    local bx, by = panelPos(IV, (vs.X - IW) / 2, 18, IW, IH, dt)
     local x = bx
     local y = math.floor(by - (1 - e) * 20 + 0.5)
 
-    IV.headRect = {x, y, IV_W, IV_HEAD}
+    IV.headRect = {x, y, IW, HEAD}
+    IV.resizeRect = {x + IW - 18, y + IH - 18, 18, 18}
+    IV.w, IV.h = IW, IH
     local canDrag = Win.open and Win.alpha > 0.3
     local hov = canDrag and (inRect(CurMouse, IV.headRect) or dragTarget == IV)
-    if hov then HoverAny = true end
+    local rhov = canDrag and (inRect(CurMouse, IV.resizeRect) or IV.resizing ~= nil)
+    if hov or rhov then HoverAny = true end
     IV.hover = damp(IV.hover, hov and 1 or 0, 12, dt)
+    IV.rhover = damp(IV.rhover, rhov and 1 or 0, 12, dt)
     IV.hasTarget = damp(IV.hasTarget, target and 1 or 0, 10, dt)
 
-    -- корпус
-    IV.shadow:set(x + 3, y + 5, IV_W, IV_H, 13, SHADOW_COL, a * 0.35)
-    local bk = (0.45 + 0.3 * IV.hover) * pulseK(2, 1.3)
-    IV.border:set(x - 1, y - 1, IV_W + 2, IV_H + 2, 13, cMix(Theme.Bg, accentAt(0.5), bk), a)
-    IV.bg:set(x, y, IV_W, IV_H, 12, Theme.Bg, a)
-    local hcol = IV.hover > 0.01 and cMix(Theme.Panel, accentAt(0.2), 0.08 * IV.hover) or Theme.Panel
-    IV.head:set(x, y, IV_W, IV_HEAD, 12, hcol, a)
-    IV.headFix.Position = Vector2.new(x, y + IV_HEAD - 12)
-    IV.headFix.Size = Vector2.new(IV_W, 12)
-    IV.headFix.Color = hcol
-    show(IV.headFix, a)
-    IV.line:set(x, y + IV_HEAD - 2, IV_W, 2, a, accentAt, edgeFade)
+    local rad = math.max(6, math.floor(12 * S + 0.5))
+    IV.shadow:set(x + 3, y + 5, IW, IH, rad + 1, SHADOW_COL, a * 0.3 * op)
+    local bk = (0.45 + 0.35 * math.max(IV.hover, IV.rhover)) * pulseK(2, 1.3)
+    IV.border:set(x - 1, y - 1, IW + 2, IH + 2, rad + 1, cMix(Theme.Bg, accentAt(0.5), bk), a * math.min(1, op + 0.2))
+    IV.bg:set(x, y, IW, IH, rad, Theme.Bg, a * op)
+    IV.line:set(x + 6, y + HEAD - 2, IW - 12, 2, a, accentAt, edgeFade)
 
-    -- "аватар" в стиле логотипа
-    local acx, acy = x + 22, y + IV_HEAD / 2 - 1
-    local ox, oy = math.cos(clock * 2) * 3, math.sin(clock * 2) * 3
+    -- аватар
+    local acx, acy = x + math.floor(22 * S), y + HEAD / 2 - 1
+    local orb = 3 * S
+    local ox, oy = math.cos(clock * 2) * orb, math.sin(clock * 2) * orb
     local ta = a * (0.35 + 0.65 * IV.hasTarget)
     IV.avA.Position = Vector2.new(acx + ox, acy + oy)
     IV.avA.Color = Theme.AccentA
@@ -1423,14 +1528,13 @@ local function renderInventory(dt)
     show(IV.avA, ta, 0.85); show(IV.avB, ta, 0.85); show(IV.avCore, ta)
     local gp = (clock * 0.7) % 1
     IV.avGlow.Position = Vector2.new(acx, acy)
-    IV.avGlow.Radius = 9 + gp * 7
+    IV.avGlow.Radius = (9 + gp * 7) * S
     IV.avGlow.Color = accentAt(0.4)
     show(IV.avGlow, a * IV.hasTarget, 0.3 * (1 - gp))
 
-    -- текст
     local filled = 0
     for i = 1, BoxCount do if SlotCache[i] then filled += 1 end end
-    setText(IV.name, "Text", target and target.Name or "No target")
+    setText(IV.name, target and target.Name or "No target")
     local now = tick()
     if now - IV.distT > 0.25 then
         IV.distT = now
@@ -1440,34 +1544,52 @@ local function renderInventory(dt)
             local d = (head and CamPos) and math.floor((head.Position - CamPos).Magnitude) or 0
             sub = d .. "m  |  " .. filled .. (filled == 1 and " item" or " items")
         end
-        setText(IV.sub, "Text", sub)
+        setText(IV.sub, sub)
     end
-    IV.name.Position = Vector2.new(x + 40, y + 5)
+    local nb, sb = bounds(IV.name), bounds(IV.sub)
+    local tx = x + math.floor(40 * S)
+    local ty0 = y + math.floor((HEAD - nb.Y - sb.Y) / 2) - 1
+    IV.name.Position = Vector2.new(tx, ty0)
     IV.name.Color = cLerp(Theme.SubText, Theme.Text, IV.hasTarget)
     show(IV.name, a)
-    IV.sub.Position = Vector2.new(x + 40, y + 21)
+    IV.sub.Position = Vector2.new(tx, ty0 + nb.Y)
     show(IV.sub, a, 0.9)
 
-    setText(IV.count, "Text", filled .. "/" .. BoxCount)
+    setText(IV.count, filled .. "/" .. BoxCount)
     local cb = bounds(IV.count)
-    local pw = math.max(34, cb.X + 16)
-    local px, py = x + IV_W - 14 - pw, y + IV_HEAD / 2 - 11
+    local ph = math.floor(20 * S + 0.5)
+    local pw = math.max(math.floor(34 * S), cb.X + 16)
+    local px, py = x + IW - PAD - pw, y + math.floor((HEAD - ph) / 2) - 1
     local acc = accentAt(0.7)
-    IV.pill:set(px, py, pw, 20, 10, cMix(Theme.Panel, acc, 0.28), a)
-    IV.count.Position = Vector2.new(px + (pw - cb.X) / 2, py + (20 - cb.Y) / 2)
+    IV.pill:set(px, py, pw, ph, ph / 2, cMix(Theme.Panel, acc, 0.3), a * math.min(1, op + 0.15))
+    IV.count.Position = Vector2.new(px + (pw - cb.X) / 2, py + (ph - cb.Y) / 2)
     IV.count.Color = cMix(Theme.Text, acc, 0.5)
     show(IV.count, a)
 
-    setGrip(IV.grip, px - 16, y + IV_HEAD / 2 - 5, a * Win.alpha * (0.45 + 0.55 * IV.hover),
+    setGrip(IV.grip, px - 16, y + HEAD / 2 - 5, a * Win.alpha * (0.45 + 0.55 * IV.hover),
         IV.hover > 0.01 and cMix(Theme.SubText, accentAt(0.5), IV.hover) or nil)
 
+    -- уголок для изменения размера
+    local rx, ry = x + IW - 5, y + IH - 5
+    local rcol = cMix(Theme.SubText, accentAt(0.8), IV.rhover)
+    IV.rs1.From = Vector2.new(rx, ry - 9)
+    IV.rs1.To = Vector2.new(rx - 9, ry)
+    IV.rs2.From = Vector2.new(rx, ry - 4)
+    IV.rs2.To = Vector2.new(rx - 4, ry)
+    IV.rs1.Color = rcol
+    IV.rs2.Color = rcol
+    local ra = a * Win.alpha * (0.5 + 0.5 * IV.rhover)
+    show(IV.rs1, ra); show(IV.rs2, ra)
+
     -- слоты
-    local sy = y + IV_HEAD + 10
+    local sy = y + HEAD + math.floor(10 * S + 0.5)
+    local srad = math.max(4, math.floor(9 * S + 0.5))
+    local inset = math.max(3, math.floor(5 * S + 0.5))
     for i = 1, BoxCount do
         local s = IV.slots[i]
         local data = SlotCache[i]
         local icon = data and data.Icon or nil
-        local sx = x + IV_PAD + (i - 1) * (SLOT + SLOT_GAP)
+        local sx = x + PAD + (i - 1) * (SLOT + GAP)
         local p = i / BoxCount
 
         s.fill = damp(s.fill, data and 1 or 0, 12, dt)
@@ -1481,26 +1603,26 @@ local function renderInventory(dt)
         end
         s.pop = damp(s.pop, 0, 9, dt)
         s.iconA = damp(s.iconA, icon and 1 or 0, 10, dt)
-        local sh = canDrag and inRect(CurMouse, {sx, sy, SLOT, SLOT})
+        local sh = canDrag and not IV.resizing and inRect(CurMouse, {sx, sy, SLOT, SLOT})
         s.hover = damp(s.hover, sh and 1 or 0, 14, dt)
 
         local lift = math.floor(s.hover * 2 + 0.5)
-        local ry = sy - lift
+        local sry = sy - lift
         local acol = accentAt(p)
-        s.ring:set(sx - 1, ry - 1, SLOT + 2, SLOT + 2, 10,
-            cMix(Theme.Stroke, acol, s.fill * (0.7 + 0.3 * s.hover)), a)
-        s.card:set(sx, ry, SLOT, SLOT, 9,
-            cMix(Theme.Element, acol, 0.08 * s.fill + 0.06 * s.hover), a)
+        s.ring:set(sx - 1, sry - 1, SLOT + 2, SLOT + 2, srad + 1,
+            cMix(Theme.Stroke, acol, s.fill * (0.7 + 0.3 * s.hover)), a * math.min(1, op + 0.2))
+        s.card:set(sx, sry, SLOT, SLOT, srad,
+            cMix(Theme.Element, acol, 0.08 * s.fill + 0.06 * s.hover), a * op)
 
-        s.sheen.From = Vector2.new(sx + 9, ry + 1)
-        s.sheen.To = Vector2.new(sx + SLOT - 9, ry + 1)
-        show(s.sheen, a, 0.07 + 0.06 * s.hover)
+        s.sheen.From = Vector2.new(sx + srad, sry + 1)
+        s.sheen.To = Vector2.new(sx + SLOT - srad, sry + 1)
+        show(s.sheen, a, 0.06 + 0.06 * s.hover)
 
         if data and not icon then
-            -- загрузка: бегущий блик
             local t = (clock * 1.1 + i * 0.13) % 1
-            s.shimmer.Position = Vector2.new(math.floor(sx + 4 + t * (SLOT - 20)), ry + 5)
-            s.shimmer.Size = Vector2.new(12, SLOT - 10)
+            local shw = math.max(6, math.floor(12 * S))
+            s.shimmer.Position = Vector2.new(math.floor(sx + inset + t * (SLOT - inset * 2 - shw)), sry + inset)
+            s.shimmer.Size = Vector2.new(shw, SLOT - inset * 2)
             s.shimmer.Color = acol
             show(s.shimmer, a, 0.22 * math.sin(t * math.pi))
         else
@@ -1508,13 +1630,13 @@ local function renderInventory(dt)
         end
 
         local ib = bounds(s.idx)
-        s.idx.Position = Vector2.new(sx + (SLOT - ib.X) / 2, ry + (SLOT - ib.Y) / 2)
+        s.idx.Position = Vector2.new(sx + (SLOT - ib.X) / 2, sry + (SLOT - ib.Y) / 2)
         show(s.idx, a, (1 - s.fill) * 0.45)
 
         if s.icon and s.iconA > 0.01 then
-            local isz = math.floor((SLOT - 10) * (1 - 0.15 * s.pop) + 0.5)
+            local isz = math.floor((SLOT - inset * 2) * (1 - 0.15 * s.pop) + 0.5)
             local ix = sx + math.floor((SLOT - isz) / 2)
-            local iy = ry + math.floor((SLOT - isz) / 2)
+            local iy = sry + math.floor((SLOT - isz) / 2)
             if s.ix ~= ix or s.iy ~= iy or s.isz ~= isz then
                 s.ix, s.iy, s.isz = ix, iy, isz
                 s.img.Position = Vector2.new(ix, iy)
@@ -1528,6 +1650,9 @@ local function renderInventory(dt)
 end
 
 --==================== NAMEPLATES (admin / cheater) ====================--
+-- мигание было из-за того, что WorldToScreen/Humanoid иногда на кадр отдают "нет":
+-- теперь плашка держится 0.3 сек после последнего успешного кадра и
+-- позиция сглаживается, а ширина не прыгает от смены дистанции.
 
 local Plates = {}
 local platesActive = 0
@@ -1535,6 +1660,7 @@ local CheaterState = setmetatable({}, {__mode = "k"})
 local CheaterScanT = 0
 local PLATE_OFF = Vector3.new(0, 2.6, 0)
 local PLATE_MAX_DIST = 1500
+local PLATE_GRACE = 0.3
 
 local function IsCheater(Player)
     local Age = GetAge(Player)
@@ -1549,13 +1675,13 @@ end
 
 local function newPlate()
     return {
-        a = 0, hidden = true, seen = -1, lastT = tick(), ph = math.random() * 6.28, distT = 0,
-        border = RoundRect.new(11),
+        a = 0, hidden = true, lastT = 0, ph = math.random() * 6.28, distT = 0,
+        border = RoundRect.new(13, true, 11),
         bg = RoundRect.new(12),
-        bar = new("Square", {Filled = true, Thickness = 1, ZIndex = 13}),
-        title = new("Text", {Text = "", Size = 13, Font = FONT, ZIndex = 14}),
-        name = new("Text", {Text = "", Size = 12, Font = FONT, ZIndex = 14, Color = Theme.Text}),
-        dist = new("Text", {Text = "", Size = 11, Font = FONT, ZIndex = 14, Color = Theme.SubText}),
+        bar = new("Square", {Filled = true, Thickness = 1, ZIndex = 14}),
+        title = new("Text", {Text = "", Size = 13, Font = FONT, ZIndex = 15}),
+        name = new("Text", {Text = "", Size = 12, Font = FONT, ZIndex = 15, Color = Theme.Text}),
+        dist = new("Text", {Text = "", Size = 11, Font = FONT, ZIndex = 15, Color = Theme.SubText}),
         tri = tryNew("Triangle", {Filled = true, Thickness = 1, ZIndex = 12}),
     }
 end
@@ -1570,20 +1696,23 @@ local function destroyPlate(pl)
     kill(pl.bar); kill(pl.title); kill(pl.name); kill(pl.dist); kill(pl.tri)
 end
 
-local function drawPlate(pl)
+local function drawPlate(pl, dt)
     local a = pl.a
+    local op = Settings.hudOpacity
     local col = pl.col or MOD_COL
     local tb, nb, db = bounds(pl.title), bounds(pl.name), bounds(pl.dist)
     local inner = math.max(tb.X + 12 + db.X, nb.X)
-    local w = math.floor(inner + 24 + 0.5)
+    local tw = math.ceil((inner + 24) / 8) * 8
+    pl.w = pl.w and damp(pl.w, tw, 16, dt) or tw
+    local w = math.floor(pl.w + 0.5)
     local h = 34
     local cx = math.floor(pl.sx + 0.5)
     local x = cx - math.floor(w / 2)
     local y = math.floor(pl.sy - h - 8 + 0.5)
 
-    local bcol = cMix(Theme.Bg, col, 0.6 * pulseK(3, pl.ph, 0.7))
-    pl.border:set(x - 1, y - 1, w + 2, h + 2, 7, bcol, a)
-    pl.bg:set(x, y, w, h, 6, Theme.Bg, a)
+    local bcol = cMix(Theme.Bg, col, 0.65 * pulseK(3, pl.ph, 0.7))
+    pl.border:set(x - 1, y - 1, w + 2, h + 2, 7, bcol, a * math.min(1, op + 0.25))
+    pl.bg:set(x, y, w, h, 6, Theme.Bg, a * math.min(1, op + 0.1))
 
     pl.bar.Position = Vector2.new(x + 5, y + 7)
     pl.bar.Size = Vector2.new(2, h - 14)
@@ -1602,7 +1731,7 @@ local function drawPlate(pl)
         pl.tri.PointB = Vector2.new(cx + 5, y + h)
         pl.tri.PointC = Vector2.new(cx, y + h + 5)
         pl.tri.Color = bcol
-        show(pl.tri, a)
+        show(pl.tri, a * math.min(1, op + 0.25))
     end
 end
 
@@ -1635,29 +1764,34 @@ local function renderPlates(dt)
                 local d = CamPos and (hp - CamPos).Magnitude or 0
                 if d <= PLATE_MAX_DIST then
                     local s, onS = WorldToScreen(hp + PLATE_OFF)
-                    if onS and s then
+                    local sx, sy = s and tonumber(s.X), s and tonumber(s.Y)
+                    if onS and sx and sy then
                         local pl = Plates[P]
                         if not pl then
                             pl = newPlate()
                             Plates[P] = pl
                         end
-                        pl.seen = frameCounter
                         pl.lastT = now
-                        pl.sx, pl.sy = tonumber(s.X) or 0, tonumber(s.Y) or 0
+                        -- сглаживание: большие скачки (поворот камеры) - сразу, мелкая дрожь - плавно
+                        if not pl.sx or math.abs(pl.sx - sx) + math.abs(pl.sy - sy) > 60 then
+                            pl.sx, pl.sy = sx, sy
+                        else
+                            pl.sx = damp(pl.sx, sx, 40, dt)
+                            pl.sy = damp(pl.sy, sy, 40, dt)
+                        end
 
                         local title = role and string.upper(role) or "CHEATER"
                         if role and cheat then title = title .. "  /  CHEATER" end
                         if pl.titleT ~= title then
                             pl.titleT = title
-                            pl.title.Text = title
+                            setText(pl.title, title)
                             pl.col = role and roleColor(role) or CHEAT_COL
                             pl.title.Color = pl.col
                         end
-                        local nm = cheat and (P.Name .. "  -  " .. cheat) or P.Name
-                        setText(pl.name, "Text", nm)
+                        setText(pl.name, cheat and (P.Name .. "  -  " .. cheat) or P.Name)
                         if now - pl.distT > 0.25 then
                             pl.distT = now
-                            setText(pl.dist, "Text", math.floor(d) .. "m")
+                            setText(pl.dist, math.floor(d) .. "m")
                         end
                     end
                 end
@@ -1667,8 +1801,9 @@ local function renderPlates(dt)
 
     platesActive = 0
     for P, pl in pairs(Plates) do
-        local want = pl.seen == frameCounter
-        pl.a = damp(pl.a, want and 1 or 0, 14, dt)
+        local want = (now - pl.lastT) < PLATE_GRACE
+            and ((adminOn and GetRole(P)) or (cheatOn and CheaterState[P]))
+        pl.a = damp(pl.a, want and 1 or 0, 12, dt)
         if not want and pl.a <= 0.01 then
             pl.a = 0
             if not pl.hidden then
@@ -1682,7 +1817,7 @@ local function renderPlates(dt)
         else
             pl.hidden = false
             platesActive += 1
-            drawPlate(pl)
+            drawPlate(pl, dt)
         end
     end
 end
@@ -1709,7 +1844,7 @@ local function renderCursor(dt)
     Cur.x = damp(Cur.x, m.X, 26, dt)
     Cur.y = damp(Cur.y, m.Y, 26, dt)
     Cur.hover = damp(Cur.hover, HoverAny and 1 or 0, 14, dt)
-    Cur.press = damp(Cur.press, (MouseDown or dragTarget) and 1 or 0, 20, dt)
+    Cur.press = damp(Cur.press, (MouseDown or dragTarget or IV.resizing) and 1 or 0, 20, dt)
 
     local p = Vector2.new(Cur.x, Cur.y)
     local r = 9 + 5 * Cur.hover - 3 * Cur.press
@@ -1851,8 +1986,8 @@ local function renderBody(dt)
     show(V.hint, a, 0.7)
 
     if active then
-        setText(V.pageTitle, "Text", active.name)
-        setText(V.pageSub, "Text", active.desc)
+        setText(V.pageTitle, active.name)
+        setText(V.pageSub, active.desc)
         local ta = a * active.alpha
         V.pageTitle.Position = Vector2.new(ox + SIDEBAR + 20 + (1 - active.alpha) * 12, oy + 10)
         show(V.pageTitle, ta)
@@ -1883,7 +2018,7 @@ local function renderBody(dt)
             for _, el in ipairs(tab.elements) do
                 local x = cx0 + slide
                 el.rect = {x, y, cw, el.h}
-                local hovered = isAct and Win.open and dragTarget == nil and inRect(m, el.rect)
+                local hovered = isAct and Win.open and dragTarget == nil and not IV.resizing and inRect(m, el.rect)
                 if hovered then HoverAny = true end
                 local ok, err = pcall(el.update, el, dt, x, y, cw, ta, hovered, m)
                 if not ok then reportError("element " .. tab.name, err) end
@@ -1920,8 +2055,6 @@ end
 table.insert(Connections, RunService.RenderStepped:Connect(render))
 
 --==================== FREE MOUSE ====================--
--- игра обычно держит мышь в центре (LockCenter) и прячет курсор каждый кадр,
--- поэтому перебиваем это после камеры, пока меню открыто
 
 local MouseCtl = {active = false}
 
@@ -1969,6 +2102,7 @@ end
 --==================== INPUT ====================--
 
 local prevRShift, prevI = false, false
+local InvSizeSlider
 
 local function startDrag(P, m)
     if P ~= Win and not P.tx then
@@ -1984,7 +2118,13 @@ local function handleClick()
     if not Win.open or Win.alpha < 0.3 then return end
     local m = getMouse()
 
-    -- панели лежат поверх окна, проверяем их первыми
+    -- уголок размера инвентаря
+    if not IV.hidden and IV.alpha > 0.3 and IV.resizeRect and inRect(m, IV.resizeRect) then
+        if not IV.tx then IV.tx, IV.ty = IV.cx, IV.cy end
+        IV.resizing = {mx = m.X, s = Settings.invScale, w = IV.w}
+        return
+    end
+
     for _, P in ipairs(DragPanels) do
         if not P.hidden and P.alpha > 0.3 and P.headRect and inRect(m, P.headRect) then
             startDrag(P, m)
@@ -2016,10 +2156,20 @@ local function handleClick()
 end
 
 local function updateDrag()
+    local m
     if dragTarget then
-        local m = getMouse()
+        m = getMouse()
         dragTarget.tx = m.X - dragOff.X
         dragTarget.ty = m.Y - dragOff.Y
+    end
+    local rs = IV.resizing
+    if rs then
+        m = m or getMouse()
+        local base = rs.w / rs.s
+        local s = math.clamp(rs.s + (m.X - rs.mx) / base, 0.5, 1.6)
+        s = math.floor(s * 100 + 0.5) / 100
+        Settings.invScale = s
+        if InvSizeSlider then InvSizeSlider:SetSilent(math.floor(s * 100 + 0.5)) end
     end
 end
 
@@ -2035,6 +2185,7 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
         end
         if (not m1) and MouseDown then
             dragTarget = nil
+            IV.resizing = nil
             for _, tab in ipairs(Win.tabs) do
                 for _, el in ipairs(tab.elements) do
                     el.dragging = false
@@ -2046,7 +2197,10 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
         local rshift = active and iskeypressed(0xA1)
         if rshift and not prevRShift then
             Win.open = not Win.open
-            if not Win.open then dragTarget = nil end
+            if not Win.open then
+                dragTarget = nil
+                IV.resizing = nil
+            end
         end
         prevRShift = rshift
 
@@ -2212,7 +2366,7 @@ visuals:Slider({
     Callback = function(v) Settings.glowPower = v / 100 end,
 })
 
-local iface = Win:Tab("Interface", "Mouse and panels")
+local iface = Win:Tab("Interface", "Mouse and HUD panels")
 
 iface:Toggle({
     Name = "Free Mouse In Menu",
@@ -2226,12 +2380,45 @@ iface:Toggle({
     Callback = function(v) Settings.cursor = v end,
 })
 
+iface:Toggle({
+    Name = "Native Rounding",
+    Default = Settings.nativeRound,
+    Callback = function(v)
+        Settings.nativeRound = v
+        if v and not NATIVE_CORNER then
+            Win:Notify("Rounding", "Executor has no Square.Corner", 2.5)
+        end
+    end,
+})
+
+InvSizeSlider = iface:Slider({
+    Name = "Inventory Size",
+    Min = 50,
+    Max = 160,
+    Step = 1,
+    Default = 100,
+    Suffix = "%",
+    Callback = function(v) Settings.invScale = v / 100 end,
+})
+
+iface:Slider({
+    Name = "HUD Opacity",
+    Min = 20,
+    Max = 100,
+    Step = 1,
+    Default = math.floor(Settings.hudOpacity * 100 + 0.5),
+    Suffix = "%",
+    Callback = function(v) Settings.hudOpacity = v / 100 end,
+})
+
 iface:Button({
-    Name = "Reset Panel Positions",
+    Name = "Reset Panels",
     Callback = function()
         AP.tx, AP.ty = nil, nil
         IV.tx, IV.ty = nil, nil
-        Win:Notify("Panels", "Positions reset", 2)
+        Settings.invScale = 1
+        InvSizeSlider:SetSilent(100)
+        Win:Notify("Panels", "Position and size reset", 2)
     end,
 })
 
@@ -2239,6 +2426,6 @@ task.delay(0.6, function()
     Win:Notify("Aurora UI", "RightShift - menu  |  I - recoil", 4)
 end)
 
-print("[Aurora] loaded")
+print("[Aurora] loaded" .. (NATIVE_CORNER and "  (native rounding)" or ""))
 
 return Win
