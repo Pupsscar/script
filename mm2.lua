@@ -1294,6 +1294,8 @@ local DroneCfg = {
     fovFPV = 110,
     volume = 0.8,
     fx = {color = true, noise = true, scan = true, osd = true, shake = true},
+    camFly = true,   -- персонаж стоит на месте, летит камера
+    hijack = true,   -- звук через подмену игровых Sound (для Matcha)
 }
 
 local Specs = {
@@ -1787,7 +1789,7 @@ local function refreshRayFilter()
     if rayParams then rayParams.FilterDescendantsInstances = {FX, LocalPlayer.Character} end
 end
 
-local meshFPV, meshShahed, renderMesh, hideMesh, startBoom, renderBoom
+local meshFPV, meshShahed, meshFPVPov, renderMesh, hideMesh, startBoom, renderBoom
 do
 --==================== drawing-mesh дрона (режим body / Matcha) ====================--
 -- модель описана гранями в локальных координатах (X вправо, Y вверх, -Z вперёд),
@@ -1881,6 +1883,20 @@ function meshFPV()
     zprism(L, 0, -0.42, -1.62, -1.45, 0.06, 0.07, 6, DC.SILVER)
     zprism(L, 0, -0.42, 0.6, 1.3, 0.24, 0.24, 6, DC.DARK)
     zprism(L, 0, -0.42, -0.08, 0.12, 0.32, 0.32, 6, DC.TAPE, 0.55)
+    return L
+end
+
+-- только то, что видно из камеры FPV: винты и боевая часть
+function meshFPVPov()
+    local L = {}
+    for _, d in ipairs({{1, -1, 1}, {-1, -1, -1}, {1, 1, -1}, {-1, 1, 1}}) do
+        local sx, sz, rot = d[1], d[2], d[3]
+        rbox(L, sx * 1.05, 0.32, sz * 1.05, 1.15, 0.025, 0.11, 0, BLADE_COL, 1,
+            {axis = "Y", c1 = sx * 1.05, c2 = sz * 1.05, speed = rot})
+    end
+    zprism(L, 0, -0.42, -0.4, 0.6, 0.3, 0.3, 6, DC.OLIVE)
+    zprism(L, 0, -0.42, -1.45, -0.4, 0.07, 0.3, 6, DC.OLIVE)
+    zprism(L, 0, -0.42, -1.62, -1.45, 0.06, 0.07, 6, DC.SILVER)
     return L
 end
 
@@ -2305,6 +2321,130 @@ function bodyRay(origin, dir, char)
 end
 end
 
+local hjStart, hjUpdate, hjBoom, hjStop
+do
+--==================== звук через подмену игровых Sound ====================--
+-- Matcha не умеет создавать Sound, но может менять свойства уже существующих.
+-- берём пару редко используемых звуков (у персонажа/в SoundService/PlayerGui),
+-- ставим им свои SoundId, а после полёта возвращаем всё как было
+
+local HJ = {saved = {}, motor = nil, boom = nil, tick = 0}
+local PROPS = {"SoundId", "Volume", "Looped", "PlaybackSpeed", "RollOffMinDistance", "RollOffMaxDistance"}
+
+local function setp(s, k, v)
+    pcall(function() s[k] = v end)
+end
+
+local function collect()
+    local out = {}
+    local function scan(root)
+        if not root then return end
+        local ok, list = pcall(function() return root:GetDescendants() end)
+        if not ok then
+            ok, list = pcall(function() return root:GetChildren() end)
+        end
+        if not ok or not list then return end
+        for _, d in ipairs(list) do
+            local isSound = false
+            pcall(function() isSound = d.ClassName == "Sound" end)
+            if isSound then out[#out + 1] = d end
+        end
+    end
+    local _, hrp = myChar()
+    scan(hrp)
+    scan(SoundService)
+    pcall(function() scan(LocalPlayer:FindFirstChild("PlayerGui")) end)
+    return out
+end
+
+local function pick(list, prefer, used)
+    for _, name in ipairs(prefer) do
+        for _, s in ipairs(list) do
+            local n = nil
+            pcall(function() n = s.Name end)
+            if s ~= used and n == name then return s end
+        end
+    end
+    for _, s in ipairs(list) do
+        if s ~= used then
+            local playing = true
+            pcall(function() playing = s.Playing end)
+            if not playing then return s end
+        end
+    end
+    return nil
+end
+
+local function save(s)
+    if not s or HJ.saved[s] then return end
+    local t = {}
+    for _, p in ipairs(PROPS) do
+        pcall(function() t[p] = s[p] end)
+    end
+    HJ.saved[s] = t
+end
+
+function hjStart(kind)
+    if not DroneCfg.hijack then return end
+    local list = collect()
+    HJ.motor = pick(list, {"Climbing", "Swimming", "GettingUp"})
+    HJ.boom = pick(list, {"Splash", "Died", "Landing", "FreeFalling"}, HJ.motor)
+    for _, s in ipairs({HJ.motor, HJ.boom}) do
+        if s then
+            save(s)
+            -- слышно на любом расстоянии, хотя звук висит на персонаже
+            setp(s, "RollOffMaxDistance", 100000)
+            setp(s, "RollOffMinDistance", 5000)
+        end
+    end
+    local m = HJ.motor
+    if m then
+        setp(m, "SoundId", kind == "FPV" and SND.fpvMotor[1] or SND.shahedMotor[1])
+        setp(m, "Looped", true)
+        setp(m, "Volume", 0.5 * DroneCfg.volume)
+        setp(m, "PlaybackSpeed", kind == "FPV" and 1.6 or 0.55)
+        setp(m, "TimePosition", 0)
+        setp(m, "Playing", true)
+    end
+end
+
+function hjUpdate(speed, vol)
+    local m = HJ.motor
+    if not m then return end
+    HJ.tick += 1
+    if HJ.tick % 3 ~= 0 then return end
+    setp(m, "PlaybackSpeed", speed)
+    setp(m, "Volume", vol * DroneCfg.volume)
+end
+
+function hjBoom(big)
+    local m = HJ.motor
+    if m then setp(m, "Playing", false) end
+    local b = HJ.boom or m
+    if b then
+        setp(b, "SoundId", SND.boom[1])
+        setp(b, "Looped", false)
+        setp(b, "Volume", 1.6 * DroneCfg.volume)
+        setp(b, "PlaybackSpeed", big and 0.7 or 0.9)
+        setp(b, "TimePosition", 0)
+        setp(b, "Playing", true)
+    end
+end
+
+function hjStop()
+    local saved = HJ.saved
+    local m = HJ.motor
+    HJ.saved, HJ.motor, HJ.boom = {}, nil, nil
+    if m then setp(m, "Playing", false) end
+    task.delay(2.5, function()
+        for s, t in pairs(saved) do
+            setp(s, "Playing", false)
+            for k, v in pairs(t) do setp(s, k, v) end
+        end
+    end)
+end
+end
+
 local fullEnd, impact, fullLaunch
 do
 local function bodyCF()
@@ -2355,6 +2495,8 @@ function impact(target, hitPos)
     local mode = Fly.mode
     if mode ~= "full" then
         startBoom(hitPos, Fly.kind == "SHAHED")
+        hjBoom(Fly.kind == "SHAHED")
+        Fly.lossT = 0.45
         Fly.striking = true
         task.spawn(function()
             local ok, res = pcall(bodyStrike, target)
@@ -2654,18 +2796,98 @@ end
 end
 
 
-local bodyEnd, bodyStep, launchDrone
+local bodyEnd, bodyStep, launchDrone, droneCamActive
 do
 --==================== body flight (Matcha) ====================--
+-- основной вариант: персонаж стоит на месте, летит только камера
+-- (CameraType = Scriptable + запись Camera.CFrame каждый кадр).
+-- если исполнитель не даёт двигать камеру - запасной: летим персонажем.
+-- стены не мешают: дрон проходит сквозь объекты, бьёт только по игрокам.
 
 local SOUND_WARNED = false
+local HiddenGuis = {}
+local PCache = {t = 0, list = {}}
+
+local function otherPlayers()
+    local now = tick()
+    if now - PCache.t > 0.25 then
+        PCache.t = now
+        table.clear(PCache.list)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then PCache.list[#PCache.list + 1] = p end
+        end
+    end
+    return PCache.list
+end
+
+-- прячем игровой интерфейс на время полёта и возвращаем после
+local function hideGameGui(on)
+    if on then
+        table.clear(HiddenGuis)
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if not pg then return end
+        local ok, kids = pcall(function() return pg:GetChildren() end)
+        if not ok or not kids then return end
+        for _, g in ipairs(kids) do
+            local isGui, en = false, false
+            pcall(function() isGui = g.ClassName == "ScreenGui" end)
+            if isGui then
+                pcall(function() en = g.Enabled end)
+                if en and pcall(function() g.Enabled = false end) then
+                    HiddenGuis[#HiddenGuis + 1] = g
+                end
+            end
+        end
+    else
+        for _, g in ipairs(HiddenGuis) do
+            pcall(function() g.Enabled = true end)
+        end
+        table.clear(HiddenGuis)
+    end
+end
+
+local HAS_CF = type(CFrame) ~= "nil"
+
+local function camLookCF(pos, look, roll)
+    local cf = CFrame.new(pos, pos + look)
+    if roll and roll ~= 0 then
+        local ok, r = pcall(function() return cf * CFrame.Angles(0, 0, roll) end)
+        if ok and r then cf = r end
+    end
+    return cf
+end
+
+local function grabCamera()
+    if not HAS_CF then return false end
+    local okT = pcall(function() Camera.CameraType = Enum.CameraType.Scriptable end)
+    local okC = pcall(function() Camera.CFrame = camLookCF(CamS.pos or Vector3.new(), CamS.look, 0) end)
+    return okT and okC
+end
+
+local function releaseCamera()
+    pcall(function() Camera.CameraType = Enum.CameraType.Custom end)
+    local _, _, hum = myChar()
+    if hum then pcall(function() Camera.CameraSubject = hum end) end
+    if Fly.fovFrom then pcall(function() Camera.FieldOfView = Fly.fovFrom end) end
+end
+
+function droneCamActive()
+    return Fly.active and Fly.camMode == true and Fly.phase ~= "deploy"
+end
 
 function bodyEnd()
     hideMesh()
-    forceFirstPerson(false)
-    setPlatform(false)
+    if Fly.camMode then
+        releaseCamera()
+    else
+        forceFirstPerson(false)
+        setPlatform(false)
+    end
+    hideGameGui(false)
+    hjStop()
     Fly.active = false
     Fly.phase = "idle"
+    Fly.camMode = nil
     Fly.cooldown = tick() + 1.5
 end
 
@@ -2679,10 +2901,12 @@ local function bodyLaunch()
 
     Fly.active = true
     Fly.mode = "body"
+    Fly.camMode = nil
     Fly.phase = "deploy"
     Fly.kind = kind
     Fly.spec = spec
     Fly.mesh = kind == "FPV" and meshFPV() or meshShahed()
+    Fly.meshPov = kind == "FPV" and meshFPVPov() or nil
     Fly.t = 0
     Fly.prop = 0
     Fly.home = hrp.Position
@@ -2699,17 +2923,39 @@ local function bodyLaunch()
     Fly.lossT = 0
     Fly.striking = false
     Fly.lock = nil
+    Fly.fovFrom = CamS.fov
+    Fly.fov = kind == "FPV" and DroneCfg.fovFPV or spec.fov
 
-    if not FULL and not SOUND_WARNED then
+    if not FULL and not SOUND_WARNED and not DroneCfg.hijack then
         SOUND_WARNED = true
-        Win:Notify("Matcha mode", "Executor can't create sounds or parts - drawing only", 4)
+        Win:Notify("Matcha mode", "Sound is off (enable Game Sound Hijack)", 3)
     end
+end
+
+-- камера сидит в модуле камеры FPV / в носу шахеда
+local function droneCamPos(R, U, F)
+    if Fly.kind == "FPV" then
+        return Fly.pos + U * 0.25 + F * 0.85
+    end
+    return Fly.pos + U * 0.12 + F * 4.75
+end
+
+local function switchToBodyFallback(hrp)
+    releaseCamera()
+    Fly.camMode = false
+    setPlatform(true)
+    forceFirstPerson(true)
+    if hrp then
+        setPos(hrp, Fly.pos)
+        setVel(hrp, ZERO3)
+    end
+    Win:Notify("Drone", "Camera is locked by executor - flying with character", 3)
 end
 
 function bodyStep(dt)
     if not Fly.active or Fly.mode ~= "body" then return end
     dt = math.min(dt, 1 / 20)
-    local char, hrp, hum = myChar()
+    local _, hrp, hum = myChar()
     local spec = Fly.spec
     local fpv = Fly.kind == "FPV"
     Fly.t += dt
@@ -2719,7 +2965,7 @@ function bodyStep(dt)
         return
     end
 
-    -- дрон собирается рядом с нами, потом "заходим" в него
+    -- дрон собирается рядом с нами (видно обычной камерой)
     if Fly.phase == "deploy" then
         local k = math.clamp(Fly.t / 0.8, 0, 1)
         local e = k * k * (3 - 2 * k)
@@ -2728,12 +2974,21 @@ function bodyStep(dt)
         local O = Fly.spawn + Vector3.new(0, (1 - e) * -1.5, 0)
         renderMesh(Fly.mesh, O, R, U, F, (fpv and 1.6 or 0.8) * (0.3 + 0.7 * e), e, Fly.prop)
         if k >= 1 then
+            hideMesh()
             Fly.home = hrp.Position
             Fly.pos = Fly.spawn
-            setPlatform(true)
-            forceFirstPerson(true)
-            setPos(hrp, Fly.pos)
-            setVel(hrp, ZERO3)
+            Fly.camFromPos, Fly.camFromLook = CamS.pos or Fly.spawn, CamS.look
+            Fly.camMode = DroneCfg.camFly and grabCamera() or false
+            Fly.camT = 0
+            Fly.camMiss = 0
+            if not Fly.camMode then
+                setPlatform(true)
+                forceFirstPerson(true)
+                setPos(hrp, Fly.pos)
+                setVel(hrp, ZERO3)
+            end
+            hideGameGui(true)
+            hjStart(Fly.kind)
             Fly.phase = "flight"
             Fly.flash = 0.5
             Fly.speed = fpv and 15 or spec.cruise * 0.8
@@ -2743,32 +2998,55 @@ function bodyStep(dt)
     end
 
     if Fly.phase == "impact" then
+        -- экран чёрный, пока персонаж бьёт цель и возвращается
         Fly.lossT -= dt
         hideMesh()
         if Fly.lossT <= 0 and not Fly.striking then bodyEnd() end
         return
     end
 
-    -- курс = куда смотрит камера (мышь двигает камеру от первого лица)
+    -- управление
     local prevYaw = Fly.yaw
-    if fpv then
-        Fly.yaw = CamS.yaw
-        Fly.pitch = math.clamp(CamS.pitch, -1.45, 1.45)
+    local sens = DroneCfg.sensitivity
+    local yawKeys = (keyDown(VK.A, KC.A) and 1 or 0) - (keyDown(VK.D, KC.D) and 1 or 0)
+    if Fly.camMode then
+        -- виртуальный стик: отклонение курсора от центра = скорость поворота
+        local vs = Camera.ViewportSize
+        local radius = vs.Y * 0.32
+        local nx = math.clamp((CurMouse.X - vs.X / 2) / radius, -1, 1)
+        local ny = math.clamp((CurMouse.Y - vs.Y / 2) / radius, -1, 1)
+        local dz = 0.06
+        nx = math.sign(nx) * math.max(0, math.abs(nx) - dz) / (1 - dz)
+        ny = math.sign(ny) * math.max(0, math.abs(ny) - dz) / (1 - dz)
+        local yawRate = fpv and 2.6 or spec.turn * 1.1
+        local pitchRate = fpv and 2.2 or spec.turn * 0.9
+        Fly.yaw -= nx * yawRate * sens * dt
+        Fly.yaw += yawKeys * spec.turn * dt * 0.8
+        Fly.pitch = Fly.pitch - ny * pitchRate * sens * dt
+        Fly.pitch = fpv and math.clamp(Fly.pitch, -1.45, 1.45) or math.clamp(Fly.pitch, -0.95, 0.6)
+        pcall(function()
+            if UIS.MouseBehavior ~= Enum.MouseBehavior.Default then UIS.MouseBehavior = Enum.MouseBehavior.Default end
+        end)
     else
-        local maxStep = spec.turn * dt
-        local dy = (CamS.yaw - Fly.yaw + math.pi) % (2 * math.pi) - math.pi
-        Fly.yaw += math.clamp(dy, -maxStep, maxStep)
-        local tp = math.clamp(CamS.pitch, -0.95, 0.6)
-        Fly.pitch += math.clamp(tp - Fly.pitch, -maxStep * 0.8, maxStep * 0.8)
+        -- запасной: курс = куда смотрит игровая камера
+        pcall(updateCam)
+        if fpv then
+            Fly.yaw = CamS.yaw
+            Fly.pitch = math.clamp(CamS.pitch, -1.45, 1.45)
+        else
+            local maxStep = spec.turn * dt
+            local dy = (CamS.yaw - Fly.yaw + math.pi) % (2 * math.pi) - math.pi
+            Fly.yaw += math.clamp(dy, -maxStep, maxStep)
+            Fly.pitch += math.clamp(math.clamp(CamS.pitch, -0.95, 0.6) - Fly.pitch, -maxStep * 0.8, maxStep * 0.8)
+        end
     end
     local dyaw = (Fly.yaw - prevYaw + math.pi) % (2 * math.pi) - math.pi
-    local yawRate = dyaw / math.max(dt, 1e-3)
-    local rollT = fpv and math.clamp(yawRate * 0.12, -0.85, 0.85) or math.clamp(yawRate * 0.75, -0.9, 0.9)
+    local yr = dyaw / math.max(dt, 1e-3)
+    local rollT = fpv and math.clamp(yr * 0.12, -0.85, 0.85) or math.clamp(yr * 0.75, -0.9, 0.9)
     Fly.roll = damp(Fly.roll, rollT, 7, dt)
 
     local kW = keyDown(VK.W, KC.W)
     local kS = keyDown(VK.S, KC.S)
-    local strafe = (keyDown(VK.D, KC.D) and 1 or 0) - (keyDown(VK.A, KC.A) and 1 or 0)
     local boost = keyDown(VK.LSHIFT, KC.LeftShift)
     local lift = (keyDown(VK.SPACE, KC.Space) and 1 or 0) - (keyDown(VK.LCTRL, KC.LeftControl) and 1 or 0)
 
@@ -2787,78 +3065,95 @@ function bodyStep(dt)
 
     local R, U, F = basis(Fly.yaw, Fly.pitch, 0)
     local desired = F * Fly.speed
-    if fpv then
-        desired += UPV * (lift * 30) + R * (strafe * 25)
-    end
-    local kk = 1 - math.exp(-spec.inertia * dt)
-    Fly.vel = Fly.vel + (desired - Fly.vel) * kk
-    if Fly.bat <= 0 then
-        Fly.vel += Vector3.new(0, -45 * dt, 0)
-    end
+    if fpv then desired += UPV * (lift * 30) end
+    Fly.vel = Fly.vel + (desired - Fly.vel) * (1 - math.exp(-spec.inertia * dt))
+    if Fly.bat <= 0 then Fly.vel += Vector3.new(0, -45 * dt, 0) end
     local newPos = Fly.pos + Fly.vel * dt
 
-    -- попадание в игрока
+    -- попадание в игрока (стены пролетаем насквозь)
     local hitR = spec.hit * DroneCfg.hitRadius
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            local ch = p.Character
-            local thrp = ch and ch:FindFirstChild("HumanoidRootPart")
-            local th = ch and ch:FindFirstChild("Humanoid")
-            if thrp and th and th.Health > 0 and segDist(Fly.pos, newPos, thrp.Position) < hitR then
+    for _, p in ipairs(otherPlayers()) do
+        local ch = p.Character
+        local thrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if thrp and segDist(Fly.pos, newPos, thrp.Position) < hitR then
+            local th = ch:FindFirstChild("Humanoid")
+            if th and th.Health > 0 then
                 Fly.pos = thrp.Position
                 impact(p, thrp.Position)
                 return
             end
         end
     end
-
-    -- стены (если исполнитель умеет Raycast)
-    local step = newPos - Fly.pos
-    if step.Magnitude > 1e-3 then
-        local dirU = vunit(step)
-        local r = bodyRay(Fly.pos + dirU * 1.6, step + dirU * 0.6, char)
-        if r then
-            local hitPlr = nil
-            for _, p in ipairs(Players:GetPlayers()) do
-                local ch = p.Character
-                if p ~= LocalPlayer and ch then
-                    local inst = r.Instance
-                    for _ = 1, 5 do
-                        if not inst then break end
-                        if inst == ch then hitPlr = p break end
-                        inst = inst.Parent
-                    end
-                end
-                if hitPlr then break end
-            end
-            impact(hitPlr, r.Position)
-            return
-        end
-    end
-    if newPos.Y < -480 then
+    if Fly.home and newPos.Y < Fly.home.Y - 300 then
         impact(nil, newPos)
         return
     end
-
-    setPos(hrp, newPos)
-    setVel(hrp, ZERO3)
-    setRotVel(hrp, ZERO3)
     Fly.pos = newPos
     Fly.prop += dt * (fpv and (25 + Fly.speed * 0.5) or 60)
+    local sr = math.clamp(Fly.speed / spec.max, 0, 1.4)
 
-    -- модель: от первого лица видно БЧ и винты, со стороны - весь дрон вокруг нас
-    local pov = CamS.pos and (CamS.pos - newPos).Magnitude < 2.6
-    if pov then
-        if fpv then
-            local cR, cU, cF = basis(CamS.yaw, CamS.pitch, 0)
-            local O = CamS.pos - cU * 0.25 - cF * 0.85
-            renderMesh(Fly.mesh, O, cR, cU, cF, 1, 1, Fly.prop, 0.12)
+    if Fly.camMode then
+        -- камера дрона
+        local cR, cU, cF = basis(Fly.yaw, Fly.pitch, fpv and Fly.roll or Fly.roll * 0.6)
+        local cp = droneCamPos(cR, cU, cF)
+        local look = cF
+        if DroneCfg.fx.shake then
+            local amp = fpv and (0.0025 + 0.006 * sr) or 0.0015
+            local n = clock * 25
+            look = vunit(look + cR * (math.sin(n * 1.7) * amp) + cU * (math.sin(n * 2.3 + 1) * amp))
+        end
+        Fly.camT = math.min(1, (Fly.camT or 1) + dt / 0.35)
+        if Fly.camT < 1 then
+            local e = Fly.camT * Fly.camT * (3 - 2 * Fly.camT)
+            cp = Fly.camFromPos + (cp - Fly.camFromPos) * e
+            look = vunit(Fly.camFromLook + (look - Fly.camFromLook) * e)
+        end
+        local cf = camLookCF(cp, look, fpv and Fly.roll or Fly.roll * 0.6)
+        pcall(function() Camera.CameraType = Enum.CameraType.Scriptable end)
+        pcall(function() Camera.CFrame = cf end)
+        pcall(function() Camera.FieldOfView = Fly.fov + (fpv and sr * 8 or 0) end)
+
+        -- проверяем, что камера реально слушается
+        if frameCounter % 10 == 0 and Fly.camT >= 1 then
+            local ok, rp = pcall(function() return Camera.CFrame.Position end)
+            if ok and rp and (rp - cp).Magnitude > 8 then
+                Fly.camMiss += 1
+                if Fly.camMiss >= 3 then
+                    switchToBodyFallback(hrp)
+                end
+            else
+                Fly.camMiss = 0
+            end
+        end
+
+        CamS.pos, CamS.look = cp, look
+        CamS.yaw, CamS.pitch = yawPitchOf(look)
+        CamS.right, CamS.up = cR, cU
+        CamS.fov = Fly.fov
+
+        -- от первого лица у FPV видны БЧ снизу и винты
+        if Fly.meshPov then
+            local O = cp - cU * 0.25 - cF * 0.85
+            renderMesh(Fly.meshPov, O, cR, cU, cF, 1, 1, Fly.prop, 0.12)
         else
             hideMesh()
         end
     else
-        local dR, dU, dF = basis(Fly.yaw, Fly.pitch + (fpv and -(Fly.speed / spec.max) * 0.45 or 0), Fly.roll * (fpv and 1.3 or 1))
-        renderMesh(Fly.mesh, newPos, dR, dU, dF, fpv and 2.2 or 1, 1, Fly.prop)
+        setPos(hrp, newPos)
+        setVel(hrp, ZERO3)
+        setRotVel(hrp, ZERO3)
+        if Fly.meshPov and CamS.pos and (CamS.pos - newPos).Magnitude < 2.6 then
+            local cR, cU, cF = basis(CamS.yaw, CamS.pitch, 0)
+            renderMesh(Fly.meshPov, CamS.pos - cU * 0.25 - cF * 0.85, cR, cU, cF, 1, 1, Fly.prop, 0.12)
+        else
+            hideMesh()
+        end
+    end
+
+    if fpv then
+        hjUpdate(1.5 + sr * 1.6, 0.35 + 0.35 * sr)
+    else
+        hjUpdate(0.55 + sr * 0.25, 0.6)
     end
 end
 
@@ -2908,7 +3203,7 @@ end
 for i = 1, 10 do
     OSD.vig[i] = oreg(new("Square", {Filled = false, Thickness = 12, ZIndex = OSDZ, Color = BLACK}))
 end
-for i = 1, 110 do
+for i = 1, 44 do
     OSD.noise[i] = oline(1, OSDZ + 2)
 end
 OSD.black = oreg(new("Square", {Filled = true, ZIndex = OSDZ + 3, Color = BLACK}))
@@ -2922,6 +3217,8 @@ OSD.hz = {oline(2), oline(2)}
 OSD.frame = {}
 for i = 1, 8 do OSD.frame[i] = oline(2) end
 OSD.top = Gradient.new(48, OSDZ + 9)
+OSD.stickL = oline(1.5)
+OSD.stickC = oreg(new("Circle", {Filled = false, Thickness = 1.5, NumSides = 20, Radius = 7, ZIndex = OSDZ + 9}))
 OSD.mode = otext(14, true)
 OSD.role = otext(13, true)
 OSD.bat = otext(14)
@@ -3004,14 +3301,14 @@ function renderOSD(dt)
             v.Size = Vector2.new(sw - ins * 2 + 12, sh - ins * 2 + 12)
         end
         -- сканлайны под текущий экран
-        local need = math.floor(sh / 4)
+        local need = math.floor(sh / 6)
         for i = #OSD.scan + 1, need do
             OSD.scan[i] = oline(1, OSDZ + 1)
             OSD.scan[i].Color = BLACK
         end
         for i, l in ipairs(OSD.scan) do
-            l.From = Vector2.new(0, i * 4)
-            l.To = Vector2.new(sw, i * 4)
+            l.From = Vector2.new(0, i * 6)
+            l.To = Vector2.new(sw, i * 6)
             if i > need then show(l, 0) end
         end
         OSD.scanN = need
@@ -3030,8 +3327,11 @@ function renderOSD(dt)
     local inten = (fpv and 0.16 or 0.07) + distK * 0.5 + (batK < 0.15 and 0.25 or 0) + takeK * 0.6
     if not fx.noise then inten = 0 end
     if inImpact then inten = 1 end
+    local noiseNow = inImpact or frameCounter % 2 == 0
     for _, l in ipairs(OSD.noise) do
-        if math.random() < inten * 0.9 then
+        if not noiseNow then
+            -- помехи обновляем через кадр
+        elseif math.random() < inten * 0.9 then
             local y = math.random(0, sh)
             local x = math.random(-60, sw)
             local len = math.random(20, 60 + math.floor(400 * inten))
@@ -3049,7 +3349,7 @@ function renderOSD(dt)
     -- потеря сигнала
     OSD.black.Position = Vector2.new(0, 0)
     OSD.black.Size = Vector2.new(sw, sh)
-    show(OSD.black, a, inImpact and 0.88 or 0)
+    show(OSD.black, a, inImpact and 1 or 0)
     Fly.flash = damp(Fly.flash or 0, 0, 6, dt)
     OSD.flash.Position = Vector2.new(0, 0)
     OSD.flash.Size = Vector2.new(sw, sh)
@@ -3079,7 +3379,7 @@ function renderOSD(dt)
             for _, l in ipairs(t.l) do show(l, 0) end
             show(t.name, 0); show(t.info, 0)
         end
-        for _, o in ipairs({OSD.dot, OSD.pip, OSD.mode, OSD.role, OSD.bat, OSD.batBox, OSD.batFill,
+        for _, o in ipairs({OSD.stickL, OSD.stickC, OSD.dot, OSD.pip, OSD.mode, OSD.role, OSD.bat, OSD.batBox, OSD.batFill,
             OSD.rec, OSD.recDot, OSD.spd, OSD.alt, OSD.dst, OSD.lq, OSD.thr, OSD.grid, OSD.hdgTxt, OSD.hdgCaret}) do
             show(o, 0)
         end
@@ -3151,6 +3451,17 @@ function renderOSD(dt)
     OSD.dot.Position = Vector2.new(cx, cy)
     OSD.dot.Color = col
     show(OSD.dot, oa)
+
+    -- виртуальный стик (камера-дрон рулится отклонением курсора от центра)
+    if droneCamActive() and Fly.phase == "flight" then
+        setLine(OSD.stickL, cx, cy, CurMouse.X, CurMouse.Y, col, oa * 0.35)
+        OSD.stickC.Position = Vector2.new(CurMouse.X, CurMouse.Y)
+        OSD.stickC.Color = col
+        show(OSD.stickC, oa, 0.9)
+    else
+        show(OSD.stickL, 0)
+        show(OSD.stickC, 0)
+    end
 
     -- авиагоризонт
     local camPos = CamS.pos
@@ -3578,7 +3889,7 @@ local function render(dt)
     clock += dt * Settings.speed
     CurMouse = getMouse()
     HoverAny = false
-    pcall(updateCam)
+    if not droneCamActive() then pcall(updateCam) end
 
     local ok, err = pcall(renderBody, dt)
     if not ok then reportError("renderBody", err) end
@@ -3769,6 +4080,18 @@ tDrone:Toggle({
     Callback = function(v) DroneCfg.enabled = v end,
 })
 
+tDrone:Toggle({
+    Name = "Character Stays (camera drone)",
+    Default = true,
+    Callback = function(v) DroneCfg.camFly = v end,
+})
+
+tDrone:Toggle({
+    Name = "Game Sound Hijack",
+    Default = true,
+    Callback = function(v) DroneCfg.hijack = v end,
+})
+
 tDrone:Button({
     Name = "Launch Now",
     Callback = function() launchDrone() end,
@@ -3842,6 +4165,6 @@ task.delay(0.6, function()
     Win:Notify("Aurora Drones", "T - launch  |  RightCtrl - menu", 4)
 end)
 
-print("[Aurora Drones] loaded  |  build 3 (matcha-safe)")
+print("[Aurora Drones] loaded  |  build 4 (camera drone)")
 
 return Win
