@@ -11,7 +11,6 @@
 
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
@@ -112,6 +111,8 @@ local function getMouse()
     return Vector2.new(mx, my)
 end
 
+local new, tryNew, kill, show, setText, setSize, damp, accentAt, pulseK, bounds, inRect, dist, reportError, fireCallback
+do
 --==================== caches + helpers ====================--
 
 local OutlineText = setmetatable({}, {__mode = "k"})
@@ -124,7 +125,7 @@ local accentCache = {}
 local accentFrame = -1
 local ACC_Q = 48
 
-local function new(class, props)
+function new(class, props)
     local o = Drawing.new(class)
     o.Visible = false
     for k, v in pairs(props or {}) do o[k] = v end
@@ -137,13 +138,13 @@ local function new(class, props)
     return o
 end
 
-local function tryNew(class, props)
+function tryNew(class, props)
     local ok, o = pcall(new, class, props)
     if ok then return o end
     return nil
 end
 
-local function kill(o)
+function kill(o)
     if not o then return end
     for i = #Objects, 1, -1 do
         if Objects[i] == o then
@@ -154,7 +155,7 @@ local function kill(o)
     pcall(function() o:Remove() end)
 end
 
-local function show(o, alpha, base)
+function show(o, alpha, base)
     if not o then return end
     local t = (tonumber(base) or 1) * (tonumber(alpha) or 0)
     if t < 0 then t = 0 elseif t > 1 then t = 1 end
@@ -187,14 +188,14 @@ local function show(o, alpha, base)
 end
 
 -- Text/Size пишутся только при изменении, без чтения свойств из Drawing
-local function setText(o, text)
+function setText(o, text)
     if TextCache[o] ~= text then
         TextCache[o] = text
         o.Text = text
     end
 end
 
-local function setSize(o, size)
+function setSize(o, size)
     if SizeCache[o] ~= size then
         SizeCache[o] = size
         o.Size = size
@@ -202,7 +203,7 @@ local function setSize(o, size)
     end
 end
 
-local function damp(a, b, speed, dt)
+function damp(a, b, speed, dt)
     a = tonumber(a) or 0
     b = tonumber(b) or 0
     local r = a + (b - a) * (1 - math.exp(-(tonumber(speed) or 12) * (tonumber(dt) or (1/60))))
@@ -210,7 +211,7 @@ local function damp(a, b, speed, dt)
     return r
 end
 
-local function accentAt(p)
+function accentAt(p)
     if accentFrame ~= frameCounter then
         table.clear(accentCache)
         accentFrame = frameCounter
@@ -225,14 +226,14 @@ local function accentAt(p)
     return c
 end
 
-local function pulseK(speed, ph, lo)
+function pulseK(speed, ph, lo)
     if not Settings.pulse then return 1 end
     lo = lo or 0.75
     local v = lo + (1 - lo) * (0.5 + 0.5 * math.sin(clock * (speed or 2) + (ph or 0)))
     return math.floor(v * 24 + 0.5) / 24
 end
 
-local function bounds(t)
+function bounds(t)
     if not t then return Vector2.new(0, 14) end
     local text = TextCache[t] or ""
     local c = BoundsCache[t]
@@ -248,7 +249,7 @@ local function bounds(t)
     return Vector2.new(#text * size * 0.5, size)
 end
 
-local function inRect(m, r)
+function inRect(m, r)
     if not m or not r then return false end
     local x, y, w, h = r[1], r[2], r[3], r[4]
     if type(x) ~= "number" or type(y) ~= "number"
@@ -259,7 +260,7 @@ local function inRect(m, r)
     return mx >= x and mx <= x + w and my >= y and my <= y + h
 end
 
-local function dist(a, b)
+function dist(a, b)
     if not a or not b then return 9999 end
     local dx = (tonumber(a.X) or 0) - (tonumber(b.X) or 0)
     local dy = (tonumber(a.Y) or 0) - (tonumber(b.Y) or 0)
@@ -267,17 +268,18 @@ local function dist(a, b)
 end
 
 local reported = {}
-local function reportError(where, err)
+function reportError(where, err)
     local key = tostring(where) .. tostring(err)
     if reported[key] then return end
     reported[key] = true
     warn("[Aurora] " .. tostring(where) .. ": " .. tostring(err))
 end
 
-local function fireCallback(cb, ...)
+function fireCallback(cb, ...)
     if not cb then return end
     local ok, err = pcall(cb, ...)
     if not ok then reportError("callback", err) end
+end
 end
 
 --==================== primitives ====================--
@@ -484,55 +486,12 @@ local function edgeFade(p)
     return v
 end
 
-local function newGrip(z)
-    local g = {}
-    for i = 1, 6 do
-        g[i] = new("Circle", {Filled = true, NumSides = 6, Radius = 1.3, ZIndex = z, Color = Theme.SubText})
-    end
-    return g
-end
-
-local function setGrip(g, x, y, a, col)
-    if g.lx ~= x or g.ly ~= y then
-        g.lx, g.ly = x, y
-        for i = 1, 6 do
-            local cx, cy = (i - 1) % 2, math.floor((i - 1) / 2)
-            g[i].Position = Vector2.new(x + cx * 4, y + cy * 4)
-        end
-    end
-    for i = 1, 6 do
-        if col then g[i].Color = col end
-        show(g[i], a)
-    end
-end
-
-local function hideGrip(g)
-    for i = 1, 6 do show(g[i], 0) end
-end
-
 --==================== shared frame state ====================--
 
 local CurMouse = Vector2.new()
-local CamPos = nil
 local HoverAny = false
 local MouseDown = false
 local dragTarget, dragOff = nil, Vector2.new()
-
-local function clampN(v, lo, hi)
-    if hi < lo then return lo end
-    if v < lo then return lo elseif v > hi then return hi end
-    return v
-end
-
-local function panelPos(P, defX, defY, w, h, dt)
-    local vs = Camera.ViewportSize
-    local tx = clampN(P.tx or defX, 4, vs.X - w - 4)
-    local ty = clampN(P.ty or defY, 4, vs.Y - h - 4)
-    if not P.cx then P.cx, P.cy = tx, ty end
-    P.cx = damp(P.cx, tx, 28, dt)
-    P.cy = damp(P.cy, ty, 28, dt)
-    return math.floor(P.cx + 0.5), math.floor(P.cy + 0.5)
-end
 
 --==================== window ====================--
 
@@ -1158,15 +1117,17 @@ local HAS_INSTANCE = type(Instance) ~= "nil" and pcall(function()
 end)
 local FULL = HAS_INSTANCE and type(CFrame) ~= "nil" and type(RaycastParams) ~= "nil" and TweenService ~= nil
 
+local VK, KC, keyDown, mouse1Down, robloxFocused, typingInChat, UPV, vdot, vcross, vunit, dirOf, yawPitchOf, basis, project, CamS, updateCam, pxPerStud
+do
 --==================== input (опрос, работает и во внешних исполнителях) ====================--
 
-local VK = {
+VK = {
     T = 0x54, W = 0x57, A = 0x41, S = 0x53, D = 0x44, ONE = 0x31,
     SPACE = 0x20, LSHIFT = 0xA0, LCTRL = 0xA2, RCTRL = 0xA3,
 }
-local KC = Enum.KeyCode
+KC = Enum.KeyCode
 
-local function keyDown(vk, kc)
+function keyDown(vk, kc)
     if type(iskeypressed) == "function" then
         local ok, v = pcall(iskeypressed, vk)
         if ok then return v and true or false end
@@ -1175,7 +1136,7 @@ local function keyDown(vk, kc)
     return ok and v or false
 end
 
-local function mouse1Down()
+function mouse1Down()
     if type(ismouse1pressed) == "function" then
         local ok, v = pcall(ismouse1pressed)
         if ok then return v and true or false end
@@ -1184,7 +1145,7 @@ local function mouse1Down()
     return ok and v or false
 end
 
-local function robloxFocused()
+function robloxFocused()
     if type(isrbxactive) == "function" then
         local ok, v = pcall(isrbxactive)
         if ok and v ~= nil then return v end
@@ -1192,39 +1153,39 @@ local function robloxFocused()
     return true
 end
 
-local function typingInChat()
+function typingInChat()
     local ok, box = pcall(function() return UIS:GetFocusedTextBox() end)
     return ok and box ~= nil
 end
 
 --==================== vector / camera helpers ====================--
 
-local UPV = Vector3.new(0, 1, 0)
+UPV = Vector3.new(0, 1, 0)
 
-local function vdot(a, b) return a.X * b.X + a.Y * b.Y + a.Z * b.Z end
-local function vcross(a, b)
+function vdot(a, b) return a.X * b.X + a.Y * b.Y + a.Z * b.Z end
+function vcross(a, b)
     return Vector3.new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X)
 end
-local function vunit(a)
+function vunit(a)
     local m = a.Magnitude
     if m < 1e-6 then return Vector3.new(0, 0, -1) end
     return a * (1 / m)
 end
 
 -- направление по рысканью/тангажу (Roblox: yaw 0 = смотрим в -Z)
-local function dirOf(yaw, pitch)
+function dirOf(yaw, pitch)
     local cp = math.cos(pitch)
     return Vector3.new(-math.sin(yaw) * cp, math.sin(pitch), -math.cos(yaw) * cp)
 end
 
-local function yawPitchOf(v)
+function yawPitchOf(v)
     local m = v.Magnitude
     if m < 1e-6 then return 0, 0 end
     return math.atan2(-v.X, -v.Z), math.asin(math.clamp(v.Y / m, -1, 1))
 end
 
 -- базис дрона: R вправо, U вверх, F вперёд (+ крен)
-local function basis(yaw, pitch, roll)
+function basis(yaw, pitch, roll)
     local F = dirOf(yaw, pitch)
     local R = Vector3.new(math.cos(yaw), 0, -math.sin(yaw))
     local U = vcross(R, F)
@@ -1237,7 +1198,7 @@ end
 
 local W2S = WorldToScreen
 
-local function project(p)
+function project(p)
     if type(W2S) == "function" then
         local ok, s, on = pcall(W2S, p)
         if ok and s then return s.X, s.Y, on and true or false end
@@ -1250,7 +1211,7 @@ end
 
 -- камера: если CFrame не читается (внешний исполнитель), направление взгляда
 -- подбираем численно через WorldToScreen так, чтобы точка попала в центр экрана
-local CamS = {pos = nil, look = Vector3.new(0, 0, -1), right = Vector3.new(1, 0, 0), up = UPV, fov = 70, yaw = 0, pitch = 0}
+CamS = {pos = nil, look = Vector3.new(0, 0, -1), right = Vector3.new(1, 0, 0), up = UPV, fov = 70, yaw = 0, pitch = 0}
 local CAM_CF_OK = nil
 
 local function solveAim(origin)
@@ -1283,7 +1244,7 @@ local function solveAim(origin)
     CamS.yaw, CamS.pitch = yaw, pitch
 end
 
-local function updateCam()
+function updateCam()
     local ok, p, l = false, nil, nil
     if CAM_CF_OK ~= false then
         ok, p, l = pcall(function()
@@ -1312,9 +1273,10 @@ local function updateCam()
 end
 
 -- пикселей на студ на заданной глубине
-local function pxPerStud(depth)
+function pxPerStud(depth)
     local vs = Camera.ViewportSize
     return (vs.Y / 2) / math.tan(math.rad(CamS.fov) / 2) / math.max(depth, 0.1)
+end
 end
 
 local MONO = (Drawing.Fonts and Drawing.Fonts.Monospace) or 3
@@ -1347,12 +1309,14 @@ local Specs = {
     },
 }
 
+local SND, SoundFolder, makeSound, playOnce, addFx, makeMotor
+do
 --==================== sounds ====================--
 -- встроенные звуки клиента Roblox: есть у всех и не бывают приватными.
 -- свой звук: поставь "rbxassetid://ID" первым в список, встроенный останется запасным
 -- (если свой не загрузится за 3 сек - переключится на следующий)
 
-local SND = {
+SND = {
     fpvMotor = {"rbxasset://sounds/Rocket whoosh 01.wav"},
     shahedMotor = {"rbxasset://sounds/Rocket whoosh 01.wav"},
     launch = {"rbxasset://sounds/swoosh.wav"},
@@ -1360,14 +1324,14 @@ local SND = {
     beep = {"rbxasset://sounds/electronicpingshort.wav"},
 }
 
-local SoundFolder = nil
+SoundFolder = nil
 if FULL then
     SoundFolder = Instance.new("Folder")
     SoundFolder.Name = "AuroraDroneSFX"
     SoundFolder.Parent = SoundService
 end
 
-local function makeSound(list, props, parent)
+function makeSound(list, props, parent)
     local s = Instance.new("Sound")
     for k, v in pairs(props or {}) do s[k] = v end
     s.SoundId = list[1]
@@ -1385,7 +1349,7 @@ local function makeSound(list, props, parent)
     return s
 end
 
-local function playOnce(list, vol, speed, parent)
+function playOnce(list, vol, speed, parent)
     if not FULL then return nil end
     local s = makeSound(list, {Volume = vol * DroneCfg.volume, PlaybackSpeed = speed or 1}, parent)
     s:Play()
@@ -1393,7 +1357,7 @@ local function playOnce(list, vol, speed, parent)
     return s
 end
 
-local function addFx(class, parent, props)
+function addFx(class, parent, props)
     local ok, fx = pcall(function()
         local e = Instance.new(class)
         for k, v in pairs(props) do e[k] = v end
@@ -1404,7 +1368,7 @@ local function addFx(class, parent, props)
 end
 
 -- мотор: один луп + эффекты. FPV - высокий злой жужж, шахед - "мопед"
-local function makeMotor(kind)
+function makeMotor(kind)
     local s = makeSound(kind == "FPV" and SND.fpvMotor or SND.shahedMotor, {Looped = true, Volume = 0})
     local dist = addFx("DistortionSoundEffect", s, {Level = kind == "FPV" and 0.55 or 0.8})
     if kind == "FPV" then
@@ -1416,6 +1380,7 @@ local function makeMotor(kind)
     end
     s:Play()
     return s, dist
+end
 end
 
 --==================== models ====================--
@@ -1434,16 +1399,18 @@ local VERT = FULL and ANG(0, 0, RAD(90)) or nil    -- цилиндр стоя
 local ALONGZ = FULL and ANG(0, RAD(90), 0) or nil  -- цилиндр вдоль Z
 local MAT = Enum.Material
 
-local CARBON = Color3.fromRGB(30, 30, 33)
-local DARK = Color3.fromRGB(16, 16, 18)
-local ORANGE = Color3.fromRGB(255, 112, 28)
-local RED = Color3.fromRGB(205, 40, 40)
-local OLIVE = Color3.fromRGB(96, 74, 44)
-local OLIVE_D = Color3.fromRGB(70, 54, 32)
-local TAPE = Color3.fromRGB(225, 230, 235)
-local SILVER = Color3.fromRGB(165, 168, 172)
-local SH_GREY = Color3.fromRGB(198, 200, 196)
-local SH_DARK = Color3.fromRGB(58, 60, 63)
+local DC = {
+    CARBON = Color3.fromRGB(30, 30, 33),
+    DARK = Color3.fromRGB(16, 16, 18),
+    ORANGE = Color3.fromRGB(255, 112, 28),
+    RED = Color3.fromRGB(205, 40, 40),
+    OLIVE = Color3.fromRGB(96, 74, 44),
+    OLIVE_D = Color3.fromRGB(70, 54, 32),
+    TAPE = Color3.fromRGB(225, 230, 235),
+    SILVER = Color3.fromRGB(165, 168, 172),
+    SH_GREY = Color3.fromRGB(198, 200, 196),
+    SH_DARK = Color3.fromRGB(58, 60, 63),
+}
 
 local moveModel, buildFPV, buildShahed, spawnExplosion
 do
@@ -1514,17 +1481,17 @@ end
 -- FPV-камикадзе как на фото: рама X, 4 мотора, камера, АКБ, антенна, БЧ снизу на скотче
 function buildFPV()
     local m = newModel()
-    add(m, mk("Part", V3(0.8, 0.1, 1.2), CARBON, MAT.Metal), CFn(0, 0, 0))
-    add(m, mk("Part", V3(0.7, 0.06, 1.0), CARBON, MAT.Metal), CFn(0, 0.24, 0))
+    add(m, mk("Part", V3(0.8, 0.1, 1.2), DC.CARBON, MAT.Metal), CFn(0, 0, 0))
+    add(m, mk("Part", V3(0.7, 0.06, 1.0), DC.CARBON, MAT.Metal), CFn(0, 0.24, 0))
     for _, s in ipairs({{1, 1}, {1, -1}, {-1, 1}, {-1, -1}}) do
-        add(m, cyl(V3(0.22, 0.05, 0.05), SILVER, MAT.Metal), CFn(s[1] * 0.3, 0.12, s[2] * 0.45) * VERT)
+        add(m, cyl(V3(0.22, 0.05, 0.05), DC.SILVER, MAT.Metal), CFn(s[1] * 0.3, 0.12, s[2] * 0.45) * VERT)
     end
     local dirs = {{1, -1, 1}, {-1, -1, -1}, {1, 1, -1}, {-1, 1, 1}}
     for _, d in ipairs(dirs) do
         local sx, sz, rot = d[1], d[2], d[3]
         local ang = math.atan2(sx, sz)
-        add(m, mk("Part", V3(0.14, 0.07, 1.5), CARBON, MAT.Metal), CFn(sx * 0.55, 0, sz * 0.55) * ANG(0, ang, 0))
-        add(m, cyl(V3(0.3, 0.28, 0.28), DARK, MAT.Metal), CFn(sx * 1.05, 0.12, sz * 1.05) * VERT)
+        add(m, mk("Part", V3(0.14, 0.07, 1.5), DC.CARBON, MAT.Metal), CFn(sx * 0.55, 0, sz * 0.55) * ANG(0, ang, 0))
+        add(m, cyl(V3(0.3, 0.28, 0.28), DC.DARK, MAT.Metal), CFn(sx * 1.05, 0.12, sz * 1.05) * VERT)
         add(m, cyl(V3(0.06, 0.3, 0.3), Color3.fromRGB(120, 122, 128), MAT.Metal), CFn(sx * 1.05, 0.28, sz * 1.05) * VERT)
         add(m, cyl(V3(0.02, 1.25, 1.25), Color3.fromRGB(45, 45, 50), MAT.SmoothPlastic, {Transparency = 0.78}),
             CFn(sx * 1.05, 0.32, sz * 1.05) * VERT)
@@ -1532,55 +1499,55 @@ function buildFPV()
             CFn(sx * 1.05, 0.32, sz * 1.05), {axis = "Y", speed = rot})
     end
     -- камера
-    add(m, mk("Part", V3(0.36, 0.32, 0.3), DARK, MAT.Metal), CFn(0, 0.24, -0.6))
-    add(m, mk("Part", V3(0.04, 0.3, 0.28), ORANGE), CFn(0.2, 0.24, -0.6))
-    add(m, mk("Part", V3(0.04, 0.3, 0.28), ORANGE), CFn(-0.2, 0.24, -0.6))
+    add(m, mk("Part", V3(0.36, 0.32, 0.3), DC.DARK, MAT.Metal), CFn(0, 0.24, -0.6))
+    add(m, mk("Part", V3(0.04, 0.3, 0.28), DC.ORANGE), CFn(0.2, 0.24, -0.6))
+    add(m, mk("Part", V3(0.04, 0.3, 0.28), DC.ORANGE), CFn(-0.2, 0.24, -0.6))
     add(m, cyl(V3(0.08, 0.22, 0.22), Color3.fromRGB(10, 10, 14), MAT.Glass, {Reflectance = 0.35}), CFn(0, 0.25, -0.78) * ALONGZ)
     -- АКБ + провода + скотч
-    add(m, mk("Part", V3(0.42, 0.3, 0.75), DARK), CFn(0, 0.42, 0.05))
-    add(m, mk("Part", V3(0.44, 0.32, 0.07), ORANGE), CFn(0, 0.42, -0.15))
-    add(m, mk("Part", V3(0.46, 0.34, 0.5), TAPE, MAT.SmoothPlastic, {Transparency = 0.62}), CFn(0, 0.42, 0.08))
-    add(m, mk("Part", V3(0.05, 0.05, 0.45), RED), CFn(0.12, 0.6, -0.02) * ANG(RAD(-12), 0, 0))
-    add(m, mk("Part", V3(0.05, 0.05, 0.45), DARK), CFn(0.04, 0.61, -0.02) * ANG(RAD(-12), 0, 0))
+    add(m, mk("Part", V3(0.42, 0.3, 0.75), DC.DARK), CFn(0, 0.42, 0.05))
+    add(m, mk("Part", V3(0.44, 0.32, 0.07), DC.ORANGE), CFn(0, 0.42, -0.15))
+    add(m, mk("Part", V3(0.46, 0.34, 0.5), DC.TAPE, MAT.SmoothPlastic, {Transparency = 0.62}), CFn(0, 0.42, 0.08))
+    add(m, mk("Part", V3(0.05, 0.05, 0.45), DC.RED), CFn(0.12, 0.6, -0.02) * ANG(RAD(-12), 0, 0))
+    add(m, mk("Part", V3(0.05, 0.05, 0.45), DC.DARK), CFn(0.04, 0.61, -0.02) * ANG(RAD(-12), 0, 0))
     -- антенна
-    add(m, cyl(V3(0.9, 0.045, 0.045), DARK), CFn(0.14, 0.78, 0.5) * ANG(RAD(18), 0, 0) * VERT)
-    add(m, mk("Part", V3(0.1, 0.14, 0.1), DARK), CFn(0.14, 1.2, 0.64))
+    add(m, cyl(V3(0.9, 0.045, 0.045), DC.DARK), CFn(0.14, 0.78, 0.5) * ANG(RAD(18), 0, 0) * VERT)
+    add(m, mk("Part", V3(0.1, 0.14, 0.1), DC.DARK), CFn(0.14, 1.2, 0.64))
     -- БЧ (выстрел РПГ) вдоль Z под рамой, нос вперёд
-    add(m, cyl(V3(1.0, 0.6, 0.6), OLIVE, MAT.Metal), CFn(0, -0.42, 0.1) * ALONGZ)
-    add(m, cyl(V3(0.3, 0.52, 0.52), OLIVE, MAT.Metal), CFn(0, -0.42, -0.52) * ALONGZ)
-    add(m, cyl(V3(0.3, 0.42, 0.42), OLIVE, MAT.Metal), CFn(0, -0.42, -0.8) * ALONGZ)
-    add(m, cyl(V3(0.3, 0.32, 0.32), OLIVE, MAT.Metal), CFn(0, -0.42, -1.07) * ALONGZ)
-    add(m, cyl(V3(0.25, 0.22, 0.22), OLIVE, MAT.Metal), CFn(0, -0.42, -1.32) * ALONGZ)
-    add(m, cyl(V3(0.22, 0.13, 0.13), SILVER, MAT.Metal), CFn(0, -0.42, -1.54) * ALONGZ)
-    add(m, cyl(V3(0.35, 0.5, 0.5), OLIVE_D, MAT.Metal), CFn(0, -0.42, 0.75) * ALONGZ)
-    add(m, cyl(V3(0.4, 0.42, 0.42), DARK, MAT.Metal), CFn(0, -0.42, 1.1) * ALONGZ)
-    add(m, cyl(V3(0.22, 0.64, 0.64), TAPE, MAT.SmoothPlastic, {Transparency = 0.55}), CFn(0, -0.42, -0.05) * ALONGZ)
-    add(m, cyl(V3(0.22, 0.64, 0.64), TAPE, MAT.SmoothPlastic, {Transparency = 0.55}), CFn(0, -0.42, 0.35) * ALONGZ)
-    add(m, mk("Part", V3(0.5, 0.55, 0.12), TAPE, MAT.SmoothPlastic, {Transparency = 0.6}), CFn(0, -0.15, 0.2))
+    add(m, cyl(V3(1.0, 0.6, 0.6), DC.OLIVE, MAT.Metal), CFn(0, -0.42, 0.1) * ALONGZ)
+    add(m, cyl(V3(0.3, 0.52, 0.52), DC.OLIVE, MAT.Metal), CFn(0, -0.42, -0.52) * ALONGZ)
+    add(m, cyl(V3(0.3, 0.42, 0.42), DC.OLIVE, MAT.Metal), CFn(0, -0.42, -0.8) * ALONGZ)
+    add(m, cyl(V3(0.3, 0.32, 0.32), DC.OLIVE, MAT.Metal), CFn(0, -0.42, -1.07) * ALONGZ)
+    add(m, cyl(V3(0.25, 0.22, 0.22), DC.OLIVE, MAT.Metal), CFn(0, -0.42, -1.32) * ALONGZ)
+    add(m, cyl(V3(0.22, 0.13, 0.13), DC.SILVER, MAT.Metal), CFn(0, -0.42, -1.54) * ALONGZ)
+    add(m, cyl(V3(0.35, 0.5, 0.5), DC.OLIVE_D, MAT.Metal), CFn(0, -0.42, 0.75) * ALONGZ)
+    add(m, cyl(V3(0.4, 0.42, 0.42), DC.DARK, MAT.Metal), CFn(0, -0.42, 1.1) * ALONGZ)
+    add(m, cyl(V3(0.22, 0.64, 0.64), DC.TAPE, MAT.SmoothPlastic, {Transparency = 0.55}), CFn(0, -0.42, -0.05) * ALONGZ)
+    add(m, cyl(V3(0.22, 0.64, 0.64), DC.TAPE, MAT.SmoothPlastic, {Transparency = 0.55}), CFn(0, -0.42, 0.35) * ALONGZ)
+    add(m, mk("Part", V3(0.5, 0.55, 0.12), DC.TAPE, MAT.SmoothPlastic, {Transparency = 0.6}), CFn(0, -0.15, 0.2))
     return m
 end
 
 -- Shahed-136: дельта-крыло, законцовки, толкающий винт
 function buildShahed()
     local m = newModel()
-    add(m, cyl(V3(6.2, 0.95, 0.95), SH_GREY, MAT.SmoothPlastic), CFn(0, 0, 0.2) * ALONGZ)
-    add(m, cyl(V3(0.5, 0.85, 0.85), SH_GREY), CFn(0, 0, -3.15) * ALONGZ)
-    add(m, cyl(V3(0.45, 0.7, 0.7), SH_GREY), CFn(0, 0, -3.6) * ALONGZ)
-    add(m, cyl(V3(0.4, 0.52, 0.52), SH_GREY), CFn(0, 0, -4.0) * ALONGZ)
-    add(m, ball(0.5, SH_GREY), CFn(0, 0, -4.22))
+    add(m, cyl(V3(6.2, 0.95, 0.95), DC.SH_GREY, MAT.SmoothPlastic), CFn(0, 0, 0.2) * ALONGZ)
+    add(m, cyl(V3(0.5, 0.85, 0.85), DC.SH_GREY), CFn(0, 0, -3.15) * ALONGZ)
+    add(m, cyl(V3(0.45, 0.7, 0.7), DC.SH_GREY), CFn(0, 0, -3.6) * ALONGZ)
+    add(m, cyl(V3(0.4, 0.52, 0.52), DC.SH_GREY), CFn(0, 0, -4.0) * ALONGZ)
+    add(m, ball(0.5, DC.SH_GREY), CFn(0, 0, -4.22))
     -- крылья (WedgePart, повёрнутый на бок = треугольник)
-    add(m, mk("WedgePart", V3(0.14, 4.2, 5.2), SH_GREY), CFn(2.55, 0.05, 1.0) * ANG(0, 0, RAD(-90)))
-    add(m, mk("WedgePart", V3(0.14, 4.2, 5.2), SH_GREY), CFn(-2.55, 0.05, 1.0) * ANG(0, 0, RAD(90)))
+    add(m, mk("WedgePart", V3(0.14, 4.2, 5.2), DC.SH_GREY), CFn(2.55, 0.05, 1.0) * ANG(0, 0, RAD(-90)))
+    add(m, mk("WedgePart", V3(0.14, 4.2, 5.2), DC.SH_GREY), CFn(-2.55, 0.05, 1.0) * ANG(0, 0, RAD(90)))
     -- законцовки
-    add(m, mk("WedgePart", V3(0.14, 1.4, 1.3), SH_DARK), CFn(4.62, 0, 3.0))
-    add(m, mk("WedgePart", V3(0.14, 1.4, 1.3), SH_DARK), CFn(-4.62, 0, 3.0))
+    add(m, mk("WedgePart", V3(0.14, 1.4, 1.3), DC.SH_DARK), CFn(4.62, 0, 3.0))
+    add(m, mk("WedgePart", V3(0.14, 1.4, 1.3), DC.SH_DARK), CFn(-4.62, 0, 3.0))
     -- мотор и винт
-    add(m, cyl(V3(0.7, 0.78, 0.78), DARK, MAT.Metal), CFn(0, 0, 3.55) * ALONGZ)
-    add(m, cyl(V3(0.25, 0.32, 0.32), DARK, MAT.Metal), CFn(0, 0, 4.0) * ALONGZ)
+    add(m, cyl(V3(0.7, 0.78, 0.78), DC.DARK, MAT.Metal), CFn(0, 0, 3.55) * ALONGZ)
+    add(m, cyl(V3(0.25, 0.32, 0.32), DC.DARK, MAT.Metal), CFn(0, 0, 4.0) * ALONGZ)
     add(m, cyl(V3(0.02, 2.3, 2.3), Color3.fromRGB(40, 40, 44), MAT.SmoothPlastic, {Transparency = 0.82}), CFn(0, 0, 4.05) * ALONGZ)
-    add(m, mk("Part", V3(0.2, 2.3, 0.06), DARK), CFn(0, 0, 4.05), {axis = "Z", speed = 1})
+    add(m, mk("Part", V3(0.2, 2.3, 0.06), DC.DARK), CFn(0, 0, 4.05), {axis = "Z", speed = 1})
     -- надпись на правом крыле
-    local plate = mk("Part", V3(2.6, 0.02, 0.55), SH_GREY, MAT.SmoothPlastic, {Transparency = 1})
+    local plate = mk("Part", V3(2.6, 0.02, 0.55), DC.SH_GREY, MAT.SmoothPlastic, {Transparency = 1})
     local sg = Instance.new("SurfaceGui")
     sg.Face = Enum.NormalId.Top
     sg.CanvasSize = Vector2.new(520, 110)
@@ -1675,7 +1642,7 @@ function spawnExplosion(pos, kind)
 
     -- обломки
     for _ = 1, math.floor(8 * sc) do
-        local p = mk("Part", V3(0.25, 0.15, 0.35) * (0.6 + math.random()), DARK, MAT.Metal)
+        local p = mk("Part", V3(0.25, 0.15, 0.35) * (0.6 + math.random()), DC.DARK, MAT.Metal)
         p.CFrame = CFn(pos)
         p.Parent = FX
         local dir = V3(math.random() - 0.5, math.random() * 0.8 + 0.2, math.random() - 0.5).Unit
@@ -1893,41 +1860,41 @@ local BLADE_COL = Color3.fromRGB(28, 28, 32)
 
 function meshFPV()
     local L = {}
-    rbox(L, 0, 0, 0, 0.8, 0.1, 1.2, 0, CARBON)
-    rbox(L, 0, 0.24, 0, 0.7, 0.06, 1.0, 0, CARBON)
+    rbox(L, 0, 0, 0, 0.8, 0.1, 1.2, 0, DC.CARBON)
+    rbox(L, 0, 0.24, 0, 0.7, 0.06, 1.0, 0, DC.CARBON)
     for _, d in ipairs({{1, -1, 1}, {-1, -1, -1}, {1, 1, -1}, {-1, 1, 1}}) do
         local sx, sz, rot = d[1], d[2], d[3]
-        rbox(L, sx * 0.55, 0, sz * 0.55, 0.14, 0.07, 1.5, math.atan2(sx, sz), CARBON)
-        rbox(L, sx * 1.05, 0.12, sz * 1.05, 0.28, 0.28, 0.28, 0.785, DARK)
+        rbox(L, sx * 0.55, 0, sz * 0.55, 0.14, 0.07, 1.5, math.atan2(sx, sz), DC.CARBON)
+        rbox(L, sx * 1.05, 0.12, sz * 1.05, 0.28, 0.28, 0.28, 0.785, DC.DARK)
         rbox(L, sx * 1.05, 0.32, sz * 1.05, 1.15, 0.025, 0.11, 0, BLADE_COL, 1,
             {axis = "Y", c1 = sx * 1.05, c2 = sz * 1.05, speed = rot})
     end
-    rbox(L, 0, 0.24, -0.6, 0.36, 0.32, 0.3, 0, DARK)
-    rbox(L, 0.2, 0.24, -0.6, 0.04, 0.3, 0.28, 0, ORANGE)
-    rbox(L, -0.2, 0.24, -0.6, 0.04, 0.3, 0.28, 0, ORANGE)
-    rbox(L, 0, 0.42, 0.05, 0.42, 0.3, 0.75, 0, DARK)
-    rbox(L, 0, 0.42, -0.15, 0.44, 0.32, 0.07, 0, ORANGE)
-    rbox(L, 0.14, 0.78, 0.5, 0.05, 0.9, 0.05, 0, DARK)
+    rbox(L, 0, 0.24, -0.6, 0.36, 0.32, 0.3, 0, DC.DARK)
+    rbox(L, 0.2, 0.24, -0.6, 0.04, 0.3, 0.28, 0, DC.ORANGE)
+    rbox(L, -0.2, 0.24, -0.6, 0.04, 0.3, 0.28, 0, DC.ORANGE)
+    rbox(L, 0, 0.42, 0.05, 0.42, 0.3, 0.75, 0, DC.DARK)
+    rbox(L, 0, 0.42, -0.15, 0.44, 0.32, 0.07, 0, DC.ORANGE)
+    rbox(L, 0.14, 0.78, 0.5, 0.05, 0.9, 0.05, 0, DC.DARK)
     -- БЧ
-    zprism(L, 0, -0.42, -0.4, 0.6, 0.3, 0.3, 6, OLIVE)
-    zprism(L, 0, -0.42, -1.45, -0.4, 0.07, 0.3, 6, OLIVE)
-    zprism(L, 0, -0.42, -1.62, -1.45, 0.06, 0.07, 6, SILVER)
-    zprism(L, 0, -0.42, 0.6, 1.3, 0.24, 0.24, 6, DARK)
-    zprism(L, 0, -0.42, -0.08, 0.12, 0.32, 0.32, 6, TAPE, 0.55)
+    zprism(L, 0, -0.42, -0.4, 0.6, 0.3, 0.3, 6, DC.OLIVE)
+    zprism(L, 0, -0.42, -1.45, -0.4, 0.07, 0.3, 6, DC.OLIVE)
+    zprism(L, 0, -0.42, -1.62, -1.45, 0.06, 0.07, 6, DC.SILVER)
+    zprism(L, 0, -0.42, 0.6, 1.3, 0.24, 0.24, 6, DC.DARK)
+    zprism(L, 0, -0.42, -0.08, 0.12, 0.32, 0.32, 6, DC.TAPE, 0.55)
     return L
 end
 
 function meshShahed()
     local L = {}
-    zprism(L, 0, 0, -2.9, 3.3, 0.47, 0.47, 6, SH_GREY)
-    zprism(L, 0, 0, -4.35, -2.9, 0.12, 0.47, 6, SH_GREY)
-    face(L, {{0.45, 0.05, -1.6}, {0.45, 0.05, 3.6}, {4.65, 0.05, 3.6}, {4.65, 0.05, 3.6}}, SH_GREY)
-    face(L, {{-0.45, 0.05, -1.6}, {-0.45, 0.05, 3.6}, {-4.65, 0.05, 3.6}, {-4.65, 0.05, 3.6}}, SH_GREY)
+    zprism(L, 0, 0, -2.9, 3.3, 0.47, 0.47, 6, DC.SH_GREY)
+    zprism(L, 0, 0, -4.35, -2.9, 0.12, 0.47, 6, DC.SH_GREY)
+    face(L, {{0.45, 0.05, -1.6}, {0.45, 0.05, 3.6}, {4.65, 0.05, 3.6}, {4.65, 0.05, 3.6}}, DC.SH_GREY)
+    face(L, {{-0.45, 0.05, -1.6}, {-0.45, 0.05, 3.6}, {-4.65, 0.05, 3.6}, {-4.65, 0.05, 3.6}}, DC.SH_GREY)
     for _, sx in ipairs({4.62, -4.62}) do
-        face(L, {{sx, -0.6, 2.6}, {sx, -0.6, 3.65}, {sx, 0.7, 3.65}, {sx, 0.7, 3.15}}, SH_DARK)
+        face(L, {{sx, -0.6, 2.6}, {sx, -0.6, 3.65}, {sx, 0.7, 3.65}, {sx, 0.7, 3.15}}, DC.SH_DARK)
     end
-    zprism(L, 0, 0, 3.2, 3.9, 0.39, 0.39, 6, DARK)
-    face(L, {{-0.1, -1.15, 4.05}, {0.1, -1.15, 4.05}, {0.1, 1.15, 4.05}, {-0.1, 1.15, 4.05}}, DARK, 1,
+    zprism(L, 0, 0, 3.2, 3.9, 0.39, 0.39, 6, DC.DARK)
+    face(L, {{-0.1, -1.15, 4.05}, {0.1, -1.15, 4.05}, {0.1, 1.15, 4.05}, {-0.1, 1.15, 4.05}}, DC.DARK, 1,
         {axis = "Z", c1 = 0, c2 = 0, speed = 1})
     return L
 end
@@ -2185,22 +2152,24 @@ function renderBoom(dt)
 end
 end
 
+local ZERO3, setPos, setVel, setRotVel, forceFirstPerson, setPlatform, bodyReturn, bodyStrike, bodyRay
+do
 --==================== body flight helpers ====================--
 
-local ZERO3 = Vector3.new(0, 0, 0)
+ZERO3 = Vector3.new(0, 0, 0)
 
-local function setPos(part, v)
+function setPos(part, v)
     if not pcall(function() part.Position = v end) then
         pcall(function() part.CFrame = CFrame.new(v) end)
     end
 end
 
-local function setVel(part, v)
+function setVel(part, v)
     pcall(function() part.Velocity = v end)
     pcall(function() part.AssemblyLinearVelocity = v end)
 end
 
-local function setRotVel(part, v)
+function setRotVel(part, v)
     pcall(function() part.RotVelocity = v end)
     pcall(function() part.AssemblyAngularVelocity = v end)
 end
@@ -2226,7 +2195,7 @@ local function pressKey(vk)
 end
 
 local CamSave = nil
-local function forceFirstPerson(on)
+function forceFirstPerson(on)
     if on then
         CamSave = {}
         pcall(function() CamSave.mode = LocalPlayer.CameraMode end)
@@ -2244,12 +2213,12 @@ local function forceFirstPerson(on)
     end
 end
 
-local function setPlatform(on)
+function setPlatform(on)
     local _, _, hum = myChar()
     if hum then pcall(function() hum.PlatformStand = on end) end
 end
 
-local function bodyReturn(home)
+function bodyReturn(home)
     local _, hrp = myChar()
     if not (hrp and home) then return end
     for _ = 1, 6 do
@@ -2261,7 +2230,7 @@ local function bodyReturn(home)
 end
 
 -- мы уже у цели (летели своим телом): нож или флинг, потом домой
-local function bodyStrike(target)
+function bodyStrike(target)
     local char, hrp, hum = myChar()
     local home = Fly.home
     local result = "none"
@@ -2316,7 +2285,7 @@ local function bodyStrike(target)
 end
 
 local RAY_OK = true
-local function bodyRay(origin, dir, char)
+function bodyRay(origin, dir, char)
     if not RAY_OK then return nil end
     local ok, r = pcall(function() return workspace:Raycast(origin, dir) end)
     if not ok then
@@ -2334,7 +2303,10 @@ local function bodyRay(origin, dir, char)
     end
     return nil
 end
+end
 
+local fullEnd, impact, fullLaunch
+do
 local function bodyCF()
     if Fly.kind == "FPV" then
         local tilt = -(Fly.speed / Fly.spec.max) * 0.45
@@ -2350,7 +2322,7 @@ local function camCF(shake)
     return base * off * (shake or CFrame.identity)
 end
 
-local function fullEnd()
+function fullEnd()
     pcall(function() RunService:UnbindFromRenderStep("AuroraDroneCam") end)
     pcall(function() CAS:UnbindAction("AuroraDroneSink") end)
     if Fly.model then Fly.model.folder:Destroy() end
@@ -2374,7 +2346,7 @@ local function fullEnd()
     Fly.cooldown = tick() + 1.5
 end
 
-local function impact(target, hitPos)
+function impact(target, hitPos)
     if Fly.phase == "impact" then return end
     Fly.phase = "impact"
     Fly.lossT = 0.95
@@ -2595,7 +2567,7 @@ local function sinkInput()
     return Enum.ContextActionResult.Sink
 end
 
-local function fullLaunch()
+function fullLaunch()
     if Fly.active or Win.destroyed then return end
     if tick() < Fly.cooldown then
         Win:Notify("Drone", "Recharging...", 1.5)
@@ -2679,13 +2651,16 @@ local function fullLaunch()
         end)
     end
 end
+end
 
 
+local bodyEnd, bodyStep, launchDrone
+do
 --==================== body flight (Matcha) ====================--
 
 local SOUND_WARNED = false
 
-local function bodyEnd()
+function bodyEnd()
     hideMesh()
     forceFirstPerson(false)
     setPlatform(false)
@@ -2731,7 +2706,7 @@ local function bodyLaunch()
     end
 end
 
-local function bodyStep(dt)
+function bodyStep(dt)
     if not Fly.active or Fly.mode ~= "body" then return end
     dt = math.min(dt, 1 / 20)
     local char, hrp, hum = myChar()
@@ -2887,7 +2862,7 @@ local function bodyStep(dt)
     end
 end
 
-local function launchDrone()
+function launchDrone()
     if Fly.active or not DroneCfg.enabled or Win.destroyed then return end
     if tick() < Fly.cooldown then
         Win:Notify("Drone", "Recharging...", 1.5)
@@ -2902,6 +2877,7 @@ local function launchDrone()
     else
         bodyLaunch()
     end
+end
 end
 
 local setLine, renderOSD, OSD_RED
@@ -3320,6 +3296,8 @@ function renderOSD(dt)
 end
 end
 
+local renderChip
+do
 --==================== HUD chip (готовность) ====================--
 
 local Chip = {a = 0, hidden = true}
@@ -3339,7 +3317,7 @@ local function hideChip()
     Chip.prog:set(0, 0, 0, 0, 0)
 end
 
-local function renderChip(dt)
+function renderChip(dt)
     local want = DroneCfg.enabled and not Fly.active and not Win.destroyed
     Chip.a = damp(Chip.a, want and 1 or 0, 10, dt)
     if not want and Chip.a <= 0 then
@@ -3386,6 +3364,7 @@ local function renderChip(dt)
     show(Chip.dot, a, 0.6 + 0.4 * math.sin(clock * 4))
     local k = cd > 0 and (1 - cd / 1.5) or 1
     Chip.prog:set(x + 10, y + h - 3, (w - 20) * k, 2, a, accentAt)
+end
 end
 
 do
@@ -3440,7 +3419,7 @@ local function drawArt(art, cx, cy, s, a, sel, hov)
         setLine(art.war, cx, cy + 4 * s, cx, cy - 40 * s, OLIVE_UI, a)
         art.tip.Position = Vector2.new(cx, cy - 42 * s)
         art.tip.Radius = 3 * s
-        art.tip.Color = SILVER
+        art.tip.Color = DC.SILVER
         show(art.tip, a)
         local sgn = {{1, 1, 1}, {-1, 1, -1}, {1, -1, -1}, {-1, -1, 1}}
         for i = 1, 4 do
@@ -3772,6 +3751,7 @@ end
 
 env.AuroraDrones = Win
 
+do
 --==================== TABS ====================--
 
 local tDrone = Win:Tab("Drone", "Pick a drone  |  T to launch")
@@ -3856,6 +3836,7 @@ tVis:Slider({
     Name = "Animation Speed", Min = 0.2, Max = 3, Step = 0.1, Default = 1, Suffix = "x",
     Callback = function(v) Settings.speed = v end,
 })
+end
 
 task.delay(0.6, function()
     Win:Notify("Aurora Drones", "T - launch  |  RightCtrl - menu", 4)
