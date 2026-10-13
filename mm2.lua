@@ -3842,6 +3842,6 @@ task.delay(0.6, function()
     Win:Notify("Aurora Drones", "T - launch  |  RightCtrl - menu", 4)
 end)
 
-print("[Aurora Drones] loaded")
+print("[Aurora Drones] loaded  |  build 3 (matcha-safe)")
 
 return Win
